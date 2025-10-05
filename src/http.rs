@@ -11,10 +11,11 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 pub async fn serve(router: Router, addr: SocketAddr) {
-    axum::Server::bind(&addr)
-        .serve(router.into_make_service())
-        .await
-        .ok();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let _ = axum::serve(listener, router).await;
 }
 
 async fn root() -> Json<serde_json::Value> {
