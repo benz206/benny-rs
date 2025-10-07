@@ -1,0 +1,15 @@
+# Ignore local artifacts
+/target
+/databases
+/logs
+
+# VCS
+/.git
+/.gitignore
+
+# IDE
+/.idea
+.vscode
+
+# Secrets/config (copy at runtime)
+config.json
