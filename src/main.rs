@@ -15,6 +15,7 @@ mod http;
 mod cogs;
 mod db;
 mod slash;
+mod tagscript;
 mod tasks;
 mod utils;
 
@@ -105,7 +106,17 @@ async fn main() -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::DIRECT_MESSAGES;
 
-    use cogs::{afk::AfkCog, base::BaseCog, prefixes::PrefixesCog, reminders::RemindersCog, CogManager};
+    use cogs::{
+        afk::AfkCog,
+        base::BaseCog,
+        logging::LoggingCog,
+        prefixes::PrefixesCog,
+        reminders::RemindersCog,
+        settings::SettingsCog,
+        tags::TagsCog,
+        welcome::WelcomeCog,
+        CogManager,
+    };
 
     struct Handler {
         cogs: Arc<CogManager>,
@@ -180,6 +191,10 @@ async fn main() -> Result<()> {
     manager.register(PrefixesCog::new(app_state.servers_db().clone(), config.prefix.clone()));
     manager.register(AfkCog::new(app_state.clone()));
     manager.register(RemindersCog::new(app_state.clone()));
+    manager.register(TagsCog::new(app_state.clone()));
+    manager.register(WelcomeCog::new(app_state.clone()));
+    manager.register(LoggingCog::new(app_state.clone()));
+    manager.register(SettingsCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
     let mut client = Client::builder(token, intents)
