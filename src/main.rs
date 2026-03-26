@@ -15,6 +15,7 @@ mod http;
 mod cogs;
 mod db;
 mod slash;
+mod tasks;
 mod utils;
 
 use config::load_config;
@@ -104,10 +105,12 @@ async fn main() -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::DIRECT_MESSAGES;
 
-    use cogs::{base::BaseCog, prefixes::PrefixesCog, CogManager};
+    use cogs::{afk::AfkCog, base::BaseCog, prefixes::PrefixesCog, reminders::RemindersCog, CogManager};
 
     struct Handler {
         cogs: Arc<CogManager>,
+        state: Arc<AppState>,
+        reminder_task_started: std::sync::atomic::AtomicBool,
     }
 
     #[serenity::async_trait]
@@ -116,6 +119,11 @@ async fn main() -> Result<()> {
             info!("connected as {} ({})", ready.user.name, ready.user.id);
             self.cogs.dispatch_ready(&ctx).await;
             slash::register_global(&ctx).await;
+
+            // Spawn reminder background task exactly once
+            if !self.reminder_task_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                tasks::reminders::spawn_reminder_task(self.state.clone(), ctx.http.clone());
+            }
         }
 
         async fn message(&self, ctx: Context, msg: Message) {
@@ -170,10 +178,16 @@ async fn main() -> Result<()> {
     let mut manager = CogManager::new(config.prefix.clone());
     manager.register(BaseCog::new(config.prefix.clone()));
     manager.register(PrefixesCog::new(app_state.servers_db().clone(), config.prefix.clone()));
+    manager.register(AfkCog::new(app_state.clone()));
+    manager.register(RemindersCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
     let mut client = Client::builder(token, intents)
-        .event_handler(Handler { cogs: manager.clone() })
+        .event_handler(Handler {
+            cogs: manager.clone(),
+            state: app_state.clone(),
+            reminder_task_started: std::sync::atomic::AtomicBool::new(false),
+        })
         .await
         .map_err(|e| {
             error!(error = ?e, "failed to create serenity client");

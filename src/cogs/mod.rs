@@ -82,5 +82,7 @@ impl CogManager {
     }
 }
 
+pub mod afk;
 pub mod base;
 pub mod prefixes;
+pub mod reminders;
