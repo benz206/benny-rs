@@ -7,7 +7,14 @@ edition = "2024"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 axum = "0.8.6"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+humantime = "2"
+mongodb = "3"
 parking_lot = "0.12.5"
+rand = "0.8"
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+regex = "1"
 reqwest = { version = "0.12.23", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -19,3 +26,4 @@ tokio-util = "0.7.16"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["time"] }
+uuid = { version = "1", features = ["v4"] }

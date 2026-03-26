@@ -1,65 +1,107 @@
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 
 pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
-    let tags = r#"
-        CREATE TABLE IF NOT EXISTS tags_tags (
-            guild_id TEXT NOT NULL,
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tags_tags (
+            guild_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             content TEXT NOT NULL,
+            owner_id INTEGER NOT NULL DEFAULT 0,
             uses INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, name)
-        )
-    "#;
+        )"
+    ).execute(pool).await?;
 
-    let settings_prefixes = r#"
-        CREATE TABLE IF NOT EXISTS settings_prefixes (
-            guild_id TEXT PRIMARY KEY,
-            prefixes TEXT NOT NULL
-        )
-    "#;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS settings_prefixes (
+            guild_id INTEGER NOT NULL,
+            prefix TEXT NOT NULL,
+            PRIMARY KEY (guild_id, prefix)
+        )"
+    ).execute(pool).await?;
 
-    let sentinels_config = r#"
-        CREATE TABLE IF NOT EXISTS sentinels_config (
-            guild_id TEXT PRIMARY KEY,
-            toxicity REAL DEFAULT 0.85
-        )
-    "#;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sentinels_config (
+            guild_id INTEGER PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            log_channel_id INTEGER,
+            toxicity REAL NOT NULL DEFAULT 0.85,
+            severe_toxicity REAL NOT NULL DEFAULT 0.85,
+            obscene REAL NOT NULL DEFAULT 0.85,
+            threat REAL NOT NULL DEFAULT 0.85,
+            insult REAL NOT NULL DEFAULT 0.85,
+            identity_attack REAL NOT NULL DEFAULT 0.85,
+            sexual_explicit REAL NOT NULL DEFAULT 0.85
+        )"
+    ).execute(pool).await?;
 
-    let sentinels_decancer = r#"
-        CREATE TABLE IF NOT EXISTS sentinels_decancer (
-            guild_id TEXT PRIMARY KEY,
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sentinels_decancer (
+            guild_id INTEGER PRIMARY KEY,
             enabled INTEGER NOT NULL DEFAULT 0
-        )
-    "#;
+        )"
+    ).execute(pool).await?;
 
-    pool.execute(tags).await?;
-    pool.execute(settings_prefixes).await?;
-    pool.execute(sentinels_config).await?;
-    pool.execute(sentinels_decancer).await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS base_afk (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            message TEXT NOT NULL DEFAULT '',
+            set_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS welcome_config (
+            guild_id INTEGER PRIMARY KEY,
+            channel_id INTEGER,
+            message TEXT NOT NULL DEFAULT 'Welcome {member.mention} to {server}!',
+            embed_json TEXT,
+            enabled INTEGER NOT NULL DEFAULT 0
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS goodbye_config (
+            guild_id INTEGER PRIMARY KEY,
+            channel_id INTEGER,
+            message TEXT NOT NULL DEFAULT 'Goodbye {member.name}!',
+            embed_json TEXT,
+            enabled INTEGER NOT NULL DEFAULT 0
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS logging_webhooks (
+            guild_id INTEGER PRIMARY KEY,
+            webhook_url TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 0
+        )"
+    ).execute(pool).await?;
+
     Ok(())
 }
 
 pub async fn ensure_users_schema(pool: &SqlitePool) -> sqlx::Result<()> {
-    let users = r#"
-        CREATE TABLE IF NOT EXISTS settings_users (
-            user_id TEXT PRIMARY KEY,
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS settings_users (
+            user_id INTEGER PRIMARY KEY,
             timezone TEXT,
-            patron_level INTEGER DEFAULT 0
-        )
-    "#;
+            patron_level INTEGER NOT NULL DEFAULT 0,
+            is_blacklisted INTEGER NOT NULL DEFAULT 0
+        )"
+    ).execute(pool).await?;
 
-    let reminders = r#"
-        CREATE TABLE IF NOT EXISTS reminders_reminders (
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS reminders_reminders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            message TEXT NOT NULL,
-            when_utc INTEGER NOT NULL
-        )
-    "#;
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            fire_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
 
-    pool.execute(users).await?;
-    pool.execute(reminders).await?;
     Ok(())
 }
-
-
