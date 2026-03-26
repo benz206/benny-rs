@@ -84,9 +84,18 @@ impl CogManager {
 
 pub mod afk;
 pub mod base;
+pub mod dictionary;
+pub mod embed;
+pub mod help;
+pub mod info;
 pub mod logging;
+pub mod moderation;
+pub mod ocr;
 pub mod prefixes;
 pub mod reminders;
+pub mod roles;
+pub mod sentinel;
 pub mod settings;
 pub mod tags;
+pub mod translate;
 pub mod welcome;

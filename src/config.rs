@@ -21,6 +21,8 @@ pub struct BotConfig {
     #[serde(default)]
     pub owners: Vec<u64>,
     pub support_guild: Option<u64>,
+    #[serde(default)]
+    pub sentiment_api_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

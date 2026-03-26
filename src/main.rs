@@ -9,11 +9,12 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 mod config;
+mod db;
+mod db_mongo;
 mod error;
 mod state;
 mod http;
 mod cogs;
-mod db;
 mod slash;
 mod tagscript;
 mod tasks;
@@ -109,11 +110,20 @@ async fn main() -> Result<()> {
     use cogs::{
         afk::AfkCog,
         base::BaseCog,
+        dictionary::DictionaryCog,
+        embed::EmbedCog,
+        help::HelpCog,
+        info::InfoCog,
         logging::LoggingCog,
+        moderation::ModerationCog,
+        ocr::OcrCog,
         prefixes::PrefixesCog,
         reminders::RemindersCog,
+        roles::RolesCog,
+        sentinel::SentinelCog,
         settings::SettingsCog,
         tags::TagsCog,
+        translate::TranslateCog,
         welcome::WelcomeCog,
         CogManager,
     };
@@ -195,6 +205,15 @@ async fn main() -> Result<()> {
     manager.register(WelcomeCog::new(app_state.clone()));
     manager.register(LoggingCog::new(app_state.clone()));
     manager.register(SettingsCog::new(app_state.clone()));
+    manager.register(ModerationCog::new(app_state.clone()));
+    manager.register(InfoCog::new(app_state.clone()));
+    manager.register(HelpCog::new(app_state.clone()));
+    manager.register(RolesCog::new(app_state.clone()));
+    manager.register(TranslateCog::new(app_state.clone()));
+    manager.register(DictionaryCog::new(app_state.clone()));
+    manager.register(OcrCog::new(app_state.clone()));
+    manager.register(EmbedCog::new(app_state.clone()));
+    manager.register(SentinelCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
     let mut client = Client::builder(token, intents)
