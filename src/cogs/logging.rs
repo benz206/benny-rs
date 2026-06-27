@@ -1,10 +1,18 @@
 use super::Cog;
 use crate::state::{AppState, LoggingConfig};
 use async_trait::async_trait;
-use serenity::all::{ChannelId, Context, GuildId, Member, Message, MessageId, User};
+use serenity::all::{
+    ChannelId, Context, GuildChannel, GuildId, Member, Message, MessageId, Role, RoleId, User,
+};
 use serenity::model::event::MessageUpdateEvent;
 use std::sync::Arc;
 use tracing::error;
+
+// Webhook embed colors (u32 hex, posted as raw JSON to the webhook).
+const C_GREEN: u32 = 0x57f287; // create / join / unban
+const C_RED: u32 = 0xed4245; // delete / ban
+const C_YELLOW: u32 = 0xfee75c; // edit
+const C_ORANGE: u32 = 0xe67e22; // leave
 
 pub struct LoggingCog {
     state: Arc<AppState>,
@@ -15,6 +23,8 @@ impl LoggingCog {
         Arc::new(Self { state })
     }
 
+    /// POST a raw embed payload to the guild's configured webhook. No-op when
+    /// the guild has no webhook configured or logging is disabled.
     async fn send_log(&self, guild_id: u64, payload: serde_json::Value) {
         let config = match self.state.logging_cache.get(&guild_id) {
             Some(c) if c.enabled && !c.webhook_url.is_empty() => c.clone(),
@@ -32,17 +42,60 @@ impl LoggingCog {
             error!(error = ?e, guild_id, "failed to send log webhook");
         }
     }
+
+    /// Build a single color-coded, timestamped embed from `fields` and dispatch
+    /// it to the guild webhook. Every logged event funnels through here so they
+    /// all carry a timestamp (DESIGN 7.13).
+    async fn log_event(
+        &self,
+        guild_id: u64,
+        title: &str,
+        color: u32,
+        fields: Vec<(&str, String, bool)>,
+    ) {
+        let json_fields: Vec<serde_json::Value> = fields
+            .into_iter()
+            .map(|(name, value, inline)| {
+                serde_json::json!({ "name": name, "value": value, "inline": inline })
+            })
+            .collect();
+
+        let payload = serde_json::json!({
+            "embeds": [{
+                "title": title,
+                "color": color,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "fields": json_fields,
+            }]
+        });
+        self.send_log(guild_id, payload).await;
+    }
+}
+
+/// Discord rejects embed field values that are empty or over 1024 chars. Normalize
+/// arbitrary user content into a safe, non-empty, truncated value.
+fn field_value(s: &str) -> String {
+    let t = s.trim();
+    if t.is_empty() {
+        "*(empty)*".to_string()
+    } else {
+        crate::utils::format::truncate(t, 1000).to_string()
+    }
+}
+
+/// `name (<@id>)` display for a user that survives the user having left.
+fn user_display(u: &User) -> String {
+    format!("{} (<@{}>)", u.name, u.id.get())
 }
 
 #[async_trait]
 impl Cog for LoggingCog {
     async fn on_ready(&self, _ctx: &Context) {
-        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-            "SELECT guild_id, webhook_url, enabled FROM logging_webhooks",
-        )
-        .fetch_all(self.state.servers_db())
-        .await
-        .unwrap_or_default();
+        let rows: Vec<(i64, String, i64)> =
+            sqlx::query_as("SELECT guild_id, webhook_url, enabled FROM logging_webhooks")
+                .fetch_all(self.state.servers_db())
+                .await
+                .unwrap_or_default();
 
         for (guild_id, webhook_url, enabled) in rows {
             self.state.logging_cache.insert(
@@ -112,19 +165,14 @@ impl Cog for LoggingCog {
                     .await;
             }
             "disable" => {
-                let _ = sqlx::query(
-                    "UPDATE logging_webhooks SET enabled = 0 WHERE guild_id = ?",
-                )
-                .bind(guild_id as i64)
-                .execute(self.state.servers_db())
-                .await;
+                let _ = sqlx::query("UPDATE logging_webhooks SET enabled = 0 WHERE guild_id = ?")
+                    .bind(guild_id as i64)
+                    .execute(self.state.servers_db())
+                    .await;
                 if let Some(mut e) = self.state.logging_cache.get_mut(&guild_id) {
                     e.enabled = false;
                 }
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Logging disabled.")
-                    .await;
+                let _ = msg.channel_id.say(&ctx.http, "Logging disabled.").await;
             }
             "test" => {
                 let payload = serde_json::json!({
@@ -134,10 +182,13 @@ impl Cog for LoggingCog {
                 let _ = msg.channel_id.say(&ctx.http, "Test log sent.").await;
             }
             _ => {
-                let _ = msg.channel_id.say(
-                    &ctx.http,
-                    "Usage: `logging setup <webhook_url>` | `logging disable` | `logging test`",
-                ).await;
+                let _ = msg
+                    .channel_id
+                    .say(
+                        &ctx.http,
+                        "Usage: `logging setup <webhook_url>` | `logging disable` | `logging test`",
+                    )
+                    .await;
             }
         }
     }
@@ -161,35 +212,41 @@ impl Cog for LoggingCog {
             None => return,
         };
 
-        let old_content = old
-            .as_ref()
-            .map(|m| m.content.as_str())
-            .unwrap_or("(unknown)");
-        let new_content = &new_msg.content;
-        if old_content == new_content {
+        // `old` is only populated when the previous message was in serenity's
+        // message cache; otherwise the "before" content is unavailable.
+        let old_content = old.as_ref().map(|m| m.content.as_str());
+        let new_content = new_msg.content.as_str();
+
+        // Identical content means a non-content edit (embed unfurl, pin, etc.);
+        // nothing useful to log.
+        if old_content == Some(new_content) {
             return;
         }
 
-        let payload = serde_json::json!({
-            "embeds": [{
-                "title": "Message Edited",
-                "color": 0xfee75c_u32,
-                "fields": [
-                    { "name": "Author", "value": format!("<@{}>", new_msg.author.id.get()), "inline": true },
-                    { "name": "Channel", "value": format!("<#{}>", new_msg.channel_id.get()), "inline": true },
-                    { "name": "Before", "value": old_content, "inline": false },
-                    { "name": "After", "value": new_content.as_str(), "inline": false },
-                ]
-            }]
-        });
-        self.send_log(guild_id, payload).await;
+        let before = match old_content {
+            Some(c) => field_value(c),
+            None => "*(unavailable — not cached)*".to_string(),
+        };
+
+        self.log_event(
+            guild_id,
+            "Message Edited",
+            C_YELLOW,
+            vec![
+                ("Author", user_display(&new_msg.author), true),
+                ("Channel", format!("<#{}>", new_msg.channel_id.get()), true),
+                ("Before", before, false),
+                ("After", field_value(new_content), false),
+            ],
+        )
+        .await;
     }
 
     async fn on_message_delete(
         &self,
-        _ctx: &Context,
+        ctx: &Context,
         channel_id: ChannelId,
-        _msg_id: MessageId,
+        msg_id: MessageId,
         guild_id: Option<GuildId>,
     ) {
         let guild_id = match guild_id {
@@ -197,52 +254,156 @@ impl Cog for LoggingCog {
             None => return,
         };
 
-        let payload = serde_json::json!({
-            "embeds": [{
-                "title": "Message Deleted",
-                "color": 0xed4245_u32,
-                "fields": [
-                    { "name": "Channel", "value": format!("<#{}>", channel_id.get()), "inline": true },
-                ]
-            }]
-        });
-        self.send_log(guild_id, payload).await;
+        // The delete event carries no content; recover author + content from the
+        // message cache when available. The guard is drained synchronously here
+        // so nothing is held across the later await.
+        let cached = ctx
+            .cache
+            .message(channel_id, msg_id)
+            .map(|m| (m.author.id.get(), m.author.bot, m.content.clone()));
+
+        let mut fields = vec![("Channel", format!("<#{}>", channel_id.get()), true)];
+        match cached {
+            Some((author_id, is_bot, content)) => {
+                if is_bot {
+                    return;
+                }
+                fields.push(("Author", format!("<@{author_id}>"), true));
+                fields.push(("Content", field_value(&content), false));
+            }
+            None => {
+                fields.push(("Message ID", msg_id.get().to_string(), true));
+                fields.push((
+                    "Content",
+                    "*(unavailable — message not cached)*".to_string(),
+                    false,
+                ));
+            }
+        }
+
+        self.log_event(guild_id, "Message Deleted", C_RED, fields).await;
     }
 
     async fn on_member_join(&self, _ctx: &Context, member: &Member) {
         let guild_id = member.guild_id.get();
-        let created_at = member.user.id.created_at();
-        let created_timestamp = created_at.unix_timestamp();
+        let created_timestamp = member.user.id.created_at().unix_timestamp();
         let now = chrono::Utc::now().timestamp();
         let account_age_days = (now - created_timestamp) / 86400;
 
-        let payload = serde_json::json!({
-            "embeds": [{
-                "title": "Member Joined",
-                "color": 0x57f287_u32,
-                "fields": [
-                    { "name": "User", "value": format!("<@{}>", member.user.id.get()), "inline": true },
-                    { "name": "Account Age", "value": format!("{account_age_days} days"), "inline": true },
-                ]
-            }]
-        });
-        self.send_log(guild_id, payload).await;
+        self.log_event(
+            guild_id,
+            "Member Joined",
+            C_GREEN,
+            vec![
+                ("User", user_display(&member.user), true),
+                ("Account Age", format!("{account_age_days} days"), true),
+            ],
+        )
+        .await;
     }
 
     async fn on_member_leave(&self, _ctx: &Context, guild_id: GuildId, user: &User) {
-        let discriminator_str = user
-            .discriminator
-            .map(|d| format!("#{d}"))
-            .unwrap_or_default();
-        let payload = serde_json::json!({
-            "embeds": [{
-                "title": "Member Left",
-                "color": 0xed4245_u32,
-                "fields": [
-                    { "name": "User", "value": format!("{}{}", user.name, discriminator_str), "inline": true },
-                ]
-            }]
-        });
-        self.send_log(guild_id.get(), payload).await;
+        self.log_event(
+            guild_id.get(),
+            "Member Left",
+            C_ORANGE,
+            vec![("User", user_display(user), true)],
+        )
+        .await;
+    }
+
+    async fn on_member_ban(&self, _ctx: &Context, guild_id: GuildId, banned_user: &User) {
+        self.log_event(
+            guild_id.get(),
+            "Member Banned",
+            C_RED,
+            vec![("User", user_display(banned_user), true)],
+        )
+        .await;
+    }
+
+    async fn on_member_unban(&self, _ctx: &Context, guild_id: GuildId, unbanned_user: &User) {
+        self.log_event(
+            guild_id.get(),
+            "Member Unbanned",
+            C_GREEN,
+            vec![("User", user_display(unbanned_user), true)],
+        )
+        .await;
+    }
+
+    async fn on_channel_create(&self, _ctx: &Context, channel: &GuildChannel) {
+        self.log_event(
+            channel.guild_id.get(),
+            "Channel Created",
+            C_GREEN,
+            vec![
+                (
+                    "Channel",
+                    format!("{} (<#{}>)", channel.name, channel.id.get()),
+                    true,
+                ),
+                ("Type", channel.kind.name().to_string(), true),
+            ],
+        )
+        .await;
+    }
+
+    async fn on_channel_delete(&self, _ctx: &Context, channel: &GuildChannel) {
+        // The channel is gone, so a `<#id>` mention would not resolve — show the
+        // raw name and id instead.
+        self.log_event(
+            channel.guild_id.get(),
+            "Channel Deleted",
+            C_RED,
+            vec![
+                ("Name", format!("#{}", channel.name), true),
+                ("Type", channel.kind.name().to_string(), true),
+                ("ID", channel.id.get().to_string(), true),
+            ],
+        )
+        .await;
+    }
+
+    async fn on_role_create(&self, _ctx: &Context, role: &Role) {
+        self.log_event(
+            role.guild_id.get(),
+            "Role Created",
+            C_GREEN,
+            vec![
+                (
+                    "Role",
+                    format!("{} (<@&{}>)", role.name, role.id.get()),
+                    true,
+                ),
+                ("ID", role.id.get().to_string(), true),
+            ],
+        )
+        .await;
+    }
+
+    async fn on_role_delete(
+        &self,
+        _ctx: &Context,
+        guild_id: GuildId,
+        role_id: RoleId,
+        role: Option<Role>,
+    ) {
+        // `role` is only present when the deleted role was cached.
+        let name = role
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| "*(uncached role)*".to_string());
+
+        self.log_event(
+            guild_id.get(),
+            "Role Deleted",
+            C_RED,
+            vec![
+                ("Role", name, true),
+                ("ID", role_id.get().to_string(), true),
+            ],
+        )
+        .await;
     }
 }

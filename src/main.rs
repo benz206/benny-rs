@@ -242,7 +242,7 @@ async fn main() -> Result<()> {
     }
 
     let mut manager = CogManager::new(config.prefix.clone());
-    manager.register(BaseCog::new(config.prefix.clone()));
+    manager.register(BaseCog::new(app_state.clone()));
     manager.register(PrefixesCog::new(app_state.clone()));
     manager.register(AfkCog::new(app_state.clone()));
     manager.register(RemindersCog::new(app_state.clone()));
@@ -265,7 +265,12 @@ async fn main() -> Result<()> {
     manager.register(MusicCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
+    // Keep a bounded message cache so logging can show edited/deleted content.
+    let mut cache_settings = serenity::cache::Settings::default();
+    cache_settings.max_messages = 1000;
+
     let mut client = Client::builder(token, intents)
+        .cache_settings(cache_settings)
         .event_handler(Handler {
             cogs: manager.clone(),
             translate: translate_cog.clone(),
