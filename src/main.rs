@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
     use cogs::{
         afk::AfkCog,
         base::BaseCog,
+        dev::DevCog,
         dictionary::DictionaryCog,
         embed::EmbedCog,
         help::HelpCog,
@@ -118,6 +119,7 @@ async fn main() -> Result<()> {
         moderation::ModerationCog,
         ocr::OcrCog,
         prefixes::PrefixesCog,
+        premium::PremiumCog,
         reminders::RemindersCog,
         roles::RolesCog,
         sentinel::SentinelCog,
@@ -138,6 +140,10 @@ async fn main() -> Result<()> {
     impl EventHandler for Handler {
         async fn ready(&self, ctx: Context, ready: Ready) {
             info!("connected as {} ({})", ready.user.name, ready.user.id);
+            info!("===========================================");
+            info!("  benny-rs v{}", env!("CARGO_PKG_VERSION"));
+            info!("  Guilds: {}", ctx.cache.guilds().len());
+            info!("===========================================");
             self.cogs.dispatch_ready(&ctx).await;
             slash::register_global(&ctx).await;
 
@@ -214,6 +220,8 @@ async fn main() -> Result<()> {
     manager.register(OcrCog::new(app_state.clone()));
     manager.register(EmbedCog::new(app_state.clone()));
     manager.register(SentinelCog::new(app_state.clone()));
+    manager.register(DevCog::new(app_state.clone()));
+    manager.register(PremiumCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
     let mut client = Client::builder(token, intents)

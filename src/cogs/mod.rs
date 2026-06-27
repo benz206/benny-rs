@@ -99,3 +99,5 @@ pub mod settings;
 pub mod tags;
 pub mod translate;
 pub mod welcome;
+pub mod dev;
+pub mod premium;
