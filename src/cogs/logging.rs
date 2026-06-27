@@ -150,7 +150,6 @@ impl Cog for LoggingCog {
                     guild_id: Set(guild_id as i64),
                     webhook_url: Set(webhook_url.to_string()),
                     enabled: Set(true),
-                    ..Default::default()
                 })
                 .on_conflict(
                     OnConflict::column(logging::Column::GuildId)

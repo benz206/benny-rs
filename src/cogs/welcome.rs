@@ -1,9 +1,14 @@
 use super::Cog;
+use crate::entities::{
+    goodbye_config, sticky_roles, sticky_roles_config, welcome_autoroles, welcome_config,
+};
 use crate::state::{AppState, GoodbyeConfig, WelcomeConfig};
 use crate::tagscript::{self, TagContext};
 use crate::utils::parse::{parse_channel_id, parse_role_id};
 use crate::utils::{colors, format};
 use async_trait::async_trait;
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serde_json::Value;
 use serenity::all::{
     ButtonStyle, ChannelId, Colour, ComponentInteraction, Context, CreateActionRow, CreateButton,
@@ -33,43 +38,39 @@ impl WelcomeCog {
 impl Cog for WelcomeCog {
     async fn on_ready(&self, _ctx: &Context) {
         // Hydrate the welcome cache from welcome_config.
-        let rows: Vec<(i64, Option<i64>, String, Option<String>, i64)> = sqlx::query_as(
-            "SELECT guild_id, channel_id, message, embed_json, enabled FROM welcome_config",
-        )
-        .fetch_all(self.state.servers_db())
-        .await
-        .unwrap_or_default();
+        let rows = welcome_config::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
 
         let welcome_count = rows.len();
-        for (guild_id, channel_id, message, embed_json, enabled) in rows {
+        for m in rows {
             self.state.welcome_cache.insert(
-                guild_id as u64,
+                m.guild_id as u64,
                 WelcomeConfig {
-                    channel_id,
-                    message,
-                    embed_json,
-                    enabled: enabled != 0,
+                    channel_id: m.channel_id,
+                    message: m.message,
+                    embed_json: m.embed_json,
+                    enabled: m.enabled,
                 },
             );
         }
 
         // Hydrate the goodbye cache from goodbye_config.
-        let rows: Vec<(i64, Option<i64>, String, Option<String>, i64)> = sqlx::query_as(
-            "SELECT guild_id, channel_id, message, embed_json, enabled FROM goodbye_config",
-        )
-        .fetch_all(self.state.servers_db())
-        .await
-        .unwrap_or_default();
+        let rows = goodbye_config::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
 
         let goodbye_count = rows.len();
-        for (guild_id, channel_id, message, embed_json, enabled) in rows {
+        for m in rows {
             self.state.goodbye_cache.insert(
-                guild_id as u64,
+                m.guild_id as u64,
                 GoodbyeConfig {
-                    channel_id,
-                    message,
-                    embed_json,
-                    enabled: enabled != 0,
+                    channel_id: m.channel_id,
+                    message: m.message,
+                    embed_json: m.embed_json,
+                    enabled: m.enabled,
                 },
             );
         }
@@ -247,7 +248,6 @@ impl WelcomeCog {
         is_welcome: bool,
         arg: &str,
     ) {
-        let table = config_table(is_welcome);
         let Some(id) = parse_channel_id(arg) else {
             let _ = msg
                 .channel_id
@@ -258,14 +258,8 @@ impl WelcomeCog {
                 .await;
             return;
         };
-        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO {table} (guild_id, channel_id) VALUES (?, ?) \
-             ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id"
-        )))
-        .bind(guild_id as i64)
-        .bind(id as i64)
-        .execute(self.state.servers_db())
-        .await;
+        self.upsert_config(guild_id, is_welcome, ConfigField::Channel(Some(id as i64)))
+            .await;
         self.reload(guild_id, is_welcome).await;
         let _ = msg
             .channel_id
@@ -291,15 +285,8 @@ impl WelcomeCog {
                 .await;
             return;
         }
-        let table = config_table(is_welcome);
-        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO {table} (guild_id, message) VALUES (?, ?) \
-             ON CONFLICT(guild_id) DO UPDATE SET message = excluded.message"
-        )))
-        .bind(guild_id as i64)
-        .bind(arg)
-        .execute(self.state.servers_db())
-        .await;
+        self.upsert_config(guild_id, is_welcome, ConfigField::Message(arg.to_string()))
+            .await;
         self.reload(guild_id, is_welcome).await;
         let _ = msg
             .channel_id
@@ -317,14 +304,8 @@ impl WelcomeCog {
     ) {
         // `embed clear` / `embed none` removes the stored embed.
         if matches!(arg, "clear" | "none" | "remove" | "off") {
-            let table = config_table(is_welcome);
-            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "INSERT INTO {table} (guild_id, embed_json) VALUES (?, NULL) \
-                 ON CONFLICT(guild_id) DO UPDATE SET embed_json = NULL"
-            )))
-            .bind(guild_id as i64)
-            .execute(self.state.servers_db())
-            .await;
+            self.upsert_config(guild_id, is_welcome, ConfigField::Embed(None))
+                .await;
             self.reload(guild_id, is_welcome).await;
             let _ = msg.channel_id.say(&ctx.http, "Custom embed cleared.").await;
             return;
@@ -335,14 +316,11 @@ impl WelcomeCog {
         let parsed: Result<Value, _> = serde_json::from_str(arg);
         match parsed {
             Ok(Value::Object(_)) => {
-                let table = config_table(is_welcome);
-                let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "INSERT INTO {table} (guild_id, embed_json) VALUES (?, ?) \
-                     ON CONFLICT(guild_id) DO UPDATE SET embed_json = excluded.embed_json"
-                )))
-                .bind(guild_id as i64)
-                .bind(arg)
-                .execute(self.state.servers_db())
+                self.upsert_config(
+                    guild_id,
+                    is_welcome,
+                    ConfigField::Embed(Some(arg.to_string())),
+                )
                 .await;
                 self.reload(guild_id, is_welcome).await;
                 let _ = msg
@@ -467,16 +445,23 @@ impl WelcomeCog {
                         .await;
                     return;
                 };
-                let _ = sqlx::query("DELETE FROM welcome_autoroles WHERE guild_id = ?")
-                    .bind(guild_id as i64)
-                    .execute(self.state.servers_db())
+                let _ = welcome_autoroles::Entity::delete_many()
+                    .filter(welcome_autoroles::Column::GuildId.eq(guild_id as i64))
+                    .exec(self.state.servers_orm())
                     .await;
-                let _ = sqlx::query(
-                    "INSERT OR IGNORE INTO welcome_autoroles (guild_id, role_id) VALUES (?, ?)",
+                let _ = welcome_autoroles::Entity::insert(welcome_autoroles::ActiveModel {
+                    guild_id: Set(guild_id as i64),
+                    role_id: Set(role_id as i64),
+                })
+                .on_conflict(
+                    OnConflict::columns([
+                        welcome_autoroles::Column::GuildId,
+                        welcome_autoroles::Column::RoleId,
+                    ])
+                    .do_nothing()
+                    .to_owned(),
                 )
-                .bind(guild_id as i64)
-                .bind(role_id as i64)
-                .execute(self.state.servers_db())
+                .exec(self.state.servers_orm())
                 .await;
                 let _ = msg
                     .channel_id
@@ -491,16 +476,25 @@ impl WelcomeCog {
                         .await;
                     return;
                 };
-                let res = sqlx::query(
-                    "INSERT OR IGNORE INTO welcome_autoroles (guild_id, role_id) VALUES (?, ?)",
+                let res = welcome_autoroles::Entity::insert(welcome_autoroles::ActiveModel {
+                    guild_id: Set(guild_id as i64),
+                    role_id: Set(role_id as i64),
+                })
+                .on_conflict(
+                    OnConflict::columns([
+                        welcome_autoroles::Column::GuildId,
+                        welcome_autoroles::Column::RoleId,
+                    ])
+                    .do_nothing()
+                    .to_owned(),
                 )
-                .bind(guild_id as i64)
-                .bind(role_id as i64)
-                .execute(self.state.servers_db())
+                .exec(self.state.servers_orm())
                 .await;
                 let text = match res {
-                    Ok(r) if r.rows_affected() > 0 => format!("Added autorole <@&{role_id}>."),
-                    Ok(_) => format!("<@&{role_id}> is already an autorole."),
+                    Ok(_) => format!("Added autorole <@&{role_id}>."),
+                    Err(DbErr::RecordNotInserted) => {
+                        format!("<@&{role_id}> is already an autorole.")
+                    }
                     Err(_) => "Database error.".to_string(),
                 };
                 let _ = msg.channel_id.say(&ctx.http, text).await;
@@ -513,25 +507,23 @@ impl WelcomeCog {
                         .await;
                     return;
                 };
-                let res =
-                    sqlx::query("DELETE FROM welcome_autoroles WHERE guild_id = ? AND role_id = ?")
-                        .bind(guild_id as i64)
-                        .bind(role_id as i64)
-                        .execute(self.state.servers_db())
-                        .await;
+                let res = welcome_autoroles::Entity::delete_many()
+                    .filter(welcome_autoroles::Column::GuildId.eq(guild_id as i64))
+                    .filter(welcome_autoroles::Column::RoleId.eq(role_id as i64))
+                    .exec(self.state.servers_orm())
+                    .await;
                 let text = match res {
-                    Ok(r) if r.rows_affected() > 0 => format!("Removed autorole <@&{role_id}>."),
+                    Ok(r) if r.rows_affected > 0 => format!("Removed autorole <@&{role_id}>."),
                     _ => format!("<@&{role_id}> was not an autorole."),
                 };
                 let _ = msg.channel_id.say(&ctx.http, text).await;
             }
             "list" | "current" | "show" => {
-                let rows: Vec<(i64,)> =
-                    sqlx::query_as("SELECT role_id FROM welcome_autoroles WHERE guild_id = ?")
-                        .bind(guild_id as i64)
-                        .fetch_all(self.state.servers_db())
-                        .await
-                        .unwrap_or_default();
+                let rows = welcome_autoroles::Entity::find()
+                    .filter(welcome_autoroles::Column::GuildId.eq(guild_id as i64))
+                    .all(self.state.servers_orm())
+                    .await
+                    .unwrap_or_default();
                 if rows.is_empty() {
                     let _ = msg
                         .channel_id
@@ -544,7 +536,7 @@ impl WelcomeCog {
                 }
                 let list = rows
                     .iter()
-                    .map(|(id,)| format!("<@&{}>", *id as u64))
+                    .map(|m| format!("<@&{}>", m.role_id as u64))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = msg
@@ -553,9 +545,9 @@ impl WelcomeCog {
                     .await;
             }
             "clear" => {
-                let _ = sqlx::query("DELETE FROM welcome_autoroles WHERE guild_id = ?")
-                    .bind(guild_id as i64)
-                    .execute(self.state.servers_db())
+                let _ = welcome_autoroles::Entity::delete_many()
+                    .filter(welcome_autoroles::Column::GuildId.eq(guild_id as i64))
+                    .exec(self.state.servers_orm())
                     .await;
                 let _ = msg
                     .channel_id
@@ -703,13 +695,13 @@ impl WelcomeCog {
         guild_id: GuildId,
         user_id: serenity::all::UserId,
     ) {
-        let rows: Vec<(i64,)> =
-            sqlx::query_as("SELECT role_id FROM welcome_autoroles WHERE guild_id = ?")
-                .bind(guild_id.get() as i64)
-                .fetch_all(self.state.servers_db())
-                .await
-                .unwrap_or_default();
-        for (role_id,) in rows {
+        let rows = welcome_autoroles::Entity::find()
+            .filter(welcome_autoroles::Column::GuildId.eq(guild_id.get() as i64))
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
+        for row in rows {
+            let role_id = row.role_id;
             let _ = ctx
                 .http
                 .add_member_role(
@@ -731,18 +723,16 @@ impl WelcomeCog {
         if !self.sticky_enabled(guild_id.get()).await {
             return;
         }
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT role_ids FROM sticky_roles WHERE guild_id = ? AND user_id = ?")
-                .bind(guild_id.get() as i64)
-                .bind(user_id.get() as i64)
-                .fetch_optional(self.state.servers_db())
+        let Some(m) =
+            sticky_roles::Entity::find_by_id((guild_id.get() as i64, user_id.get() as i64))
+                .one(self.state.servers_orm())
                 .await
                 .ok()
-                .flatten();
-        let Some((role_ids,)) = row else {
+                .flatten()
+        else {
             return;
         };
-        for part in role_ids.split(',') {
+        for part in m.role_ids.split(',') {
             if let Ok(rid) = part.trim().parse::<u64>() {
                 let _ = ctx
                     .http
@@ -771,102 +761,169 @@ impl WelcomeCog {
             .map(|r| r.get().to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let _ = sqlx::query(
-            "INSERT INTO sticky_roles (guild_id, user_id, role_ids) VALUES (?, ?, ?) \
-             ON CONFLICT(guild_id, user_id) DO UPDATE SET role_ids = excluded.role_ids",
+        let _ = sticky_roles::Entity::insert(sticky_roles::ActiveModel {
+            guild_id: Set(guild_id.get() as i64),
+            user_id: Set(user.id.get() as i64),
+            role_ids: Set(ids),
+        })
+        .on_conflict(
+            OnConflict::columns([
+                sticky_roles::Column::GuildId,
+                sticky_roles::Column::UserId,
+            ])
+            .update_column(sticky_roles::Column::RoleIds)
+            .to_owned(),
         )
-        .bind(guild_id.get() as i64)
-        .bind(user.id.get() as i64)
-        .bind(ids)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
     }
 
     // ---- small DB / cache helpers ----------------------------------------
 
     /// Set the enabled flag for welcome/goodbye and refresh the cache.
+    /// Upsert one column of a guild's welcome/goodbye config row. The two
+    /// tables are structurally identical; `is_welcome` selects which one.
+    /// Unset columns fall back to their schema defaults on first insert.
+    async fn upsert_config(&self, guild_id: u64, is_welcome: bool, field: ConfigField) {
+        let gid = guild_id as i64;
+        let conn = self.state.servers_orm();
+        if is_welcome {
+            use welcome_config::Column as C;
+            let mut am = welcome_config::ActiveModel {
+                guild_id: Set(gid),
+                ..Default::default()
+            };
+            let col = match field {
+                ConfigField::Channel(v) => {
+                    am.channel_id = Set(v);
+                    C::ChannelId
+                }
+                ConfigField::Message(v) => {
+                    am.message = Set(v);
+                    C::Message
+                }
+                ConfigField::Embed(v) => {
+                    am.embed_json = Set(v);
+                    C::EmbedJson
+                }
+                ConfigField::Enabled(v) => {
+                    am.enabled = Set(v);
+                    C::Enabled
+                }
+            };
+            let _ = welcome_config::Entity::insert(am)
+                .on_conflict(OnConflict::column(C::GuildId).update_column(col).to_owned())
+                .exec(conn)
+                .await;
+        } else {
+            use goodbye_config::Column as C;
+            let mut am = goodbye_config::ActiveModel {
+                guild_id: Set(gid),
+                ..Default::default()
+            };
+            let col = match field {
+                ConfigField::Channel(v) => {
+                    am.channel_id = Set(v);
+                    C::ChannelId
+                }
+                ConfigField::Message(v) => {
+                    am.message = Set(v);
+                    C::Message
+                }
+                ConfigField::Embed(v) => {
+                    am.embed_json = Set(v);
+                    C::EmbedJson
+                }
+                ConfigField::Enabled(v) => {
+                    am.enabled = Set(v);
+                    C::Enabled
+                }
+            };
+            let _ = goodbye_config::Entity::insert(am)
+                .on_conflict(OnConflict::column(C::GuildId).update_column(col).to_owned())
+                .exec(conn)
+                .await;
+        }
+    }
+
     async fn set_enabled(&self, guild_id: u64, is_welcome: bool, enabled: bool) {
-        let table = config_table(is_welcome);
-        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO {table} (guild_id, enabled) VALUES (?, ?) \
-             ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled"
-        )))
-        .bind(guild_id as i64)
-        .bind(enabled as i64)
-        .execute(self.state.servers_db())
-        .await;
+        self.upsert_config(guild_id, is_welcome, ConfigField::Enabled(enabled))
+            .await;
         self.reload(guild_id, is_welcome).await;
     }
 
     /// Reload a single guild's welcome/goodbye row into the cache.
     async fn reload(&self, guild_id: u64, is_welcome: bool) {
-        let table = config_table(is_welcome);
-        let row: Option<(Option<i64>, String, Option<String>, i64)> =
-            sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "SELECT channel_id, message, embed_json, enabled FROM {table} WHERE guild_id = ?"
-            )))
-            .bind(guild_id as i64)
-            .fetch_optional(self.state.servers_db())
-            .await
-            .ok()
-            .flatten();
-        let Some((channel_id, message, embed_json, enabled)) = row else {
-            return;
-        };
         if is_welcome {
+            let Some(m) = welcome_config::Entity::find_by_id(guild_id as i64)
+                .one(self.state.servers_orm())
+                .await
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
             self.state.welcome_cache.insert(
                 guild_id,
                 WelcomeConfig {
-                    channel_id,
-                    message,
-                    embed_json,
-                    enabled: enabled != 0,
+                    channel_id: m.channel_id,
+                    message: m.message,
+                    embed_json: m.embed_json,
+                    enabled: m.enabled,
                 },
             );
         } else {
+            let Some(m) = goodbye_config::Entity::find_by_id(guild_id as i64)
+                .one(self.state.servers_orm())
+                .await
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
             self.state.goodbye_cache.insert(
                 guild_id,
                 GoodbyeConfig {
-                    channel_id,
-                    message,
-                    embed_json,
-                    enabled: enabled != 0,
+                    channel_id: m.channel_id,
+                    message: m.message,
+                    embed_json: m.embed_json,
+                    enabled: m.enabled,
                 },
             );
         }
     }
 
     async fn sticky_enabled(&self, guild_id: u64) -> bool {
-        let v: Option<i64> =
-            sqlx::query_scalar("SELECT enabled FROM sticky_roles_config WHERE guild_id = ?")
-                .bind(guild_id as i64)
-                .fetch_optional(self.state.servers_db())
-                .await
-                .ok()
-                .flatten();
-        v.map(|e| e != 0).unwrap_or(false)
+        sticky_roles_config::Entity::find_by_id(guild_id as i64)
+            .one(self.state.servers_orm())
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.enabled)
+            .unwrap_or(false)
     }
 
     async fn set_sticky_enabled(&self, guild_id: u64, enabled: bool) {
-        let _ = sqlx::query(
-            "INSERT INTO sticky_roles_config (guild_id, enabled) VALUES (?, ?) \
-             ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled",
+        let _ = sticky_roles_config::Entity::insert(sticky_roles_config::ActiveModel {
+            guild_id: Set(guild_id as i64),
+            enabled: Set(enabled),
+        })
+        .on_conflict(
+            OnConflict::column(sticky_roles_config::Column::GuildId)
+                .update_column(sticky_roles_config::Column::Enabled)
+                .to_owned(),
         )
-        .bind(guild_id as i64)
-        .bind(enabled as i64)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
     }
 }
 
-/// Table name for the welcome/goodbye config (interpolated into trusted,
-/// hand-written SQL only — never user input).
-fn config_table(is_welcome: bool) -> &'static str {
-    if is_welcome {
-        "welcome_config"
-    } else {
-        "goodbye_config"
-    }
+/// Which column of a guild's welcome/goodbye config row to upsert.
+enum ConfigField {
+    Channel(Option<i64>),
+    Message(String),
+    Embed(Option<String>),
+    Enabled(bool),
 }
 
 /// Split off the first whitespace-delimited token, returning it plus the

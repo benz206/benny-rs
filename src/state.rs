@@ -66,10 +66,9 @@ pub struct LoggingConfig {
 pub struct AppState {
     pub config: Arc<BotConfig>,
     pub http: HttpClient,
-    pub servers_db: SqlitePool,
-    pub users_db: SqlitePool,
-    /// SeaORM handles over the same underlying sqlx pools (built via
-    /// `From<SqlitePool>`). Cogs query through these instead of raw SQL.
+    /// SeaORM handles wrapping the sqlx pools (built via `From<SqlitePool>`).
+    /// These own the only references to the underlying pools; cogs query
+    /// exclusively through them.
     pub servers_orm: DatabaseConnection,
     pub users_orm: DatabaseConnection,
     pub mongo: Option<MongoClient>,
@@ -97,15 +96,13 @@ impl AppState {
         mongo: Option<MongoClient>,
         redis: Option<Arc<tokio::sync::Mutex<RedisManager>>>,
     ) -> Self {
-        // Wrap the existing sqlx pools so SeaORM shares the same connections
-        // (no second pool / no extra SQLite file locking).
-        let servers_orm = DatabaseConnection::from(servers_db.clone());
-        let users_orm = DatabaseConnection::from(users_db.clone());
+        // Wrap the sqlx pools so SeaORM owns them directly (no second pool /
+        // no extra SQLite file locking).
+        let servers_orm = DatabaseConnection::from(servers_db);
+        let users_orm = DatabaseConnection::from(users_db);
         Self {
             config,
             http,
-            servers_db,
-            users_db,
             servers_orm,
             users_orm,
             mongo,
@@ -125,12 +122,6 @@ impl AppState {
 
     pub fn http(&self) -> &HttpClient {
         &self.http
-    }
-    pub fn servers_db(&self) -> &SqlitePool {
-        &self.servers_db
-    }
-    pub fn users_db(&self) -> &SqlitePool {
-        &self.users_db
     }
     pub fn servers_orm(&self) -> &DatabaseConnection {
         &self.servers_orm
