@@ -134,12 +134,15 @@ impl DictionaryCog {
     }
 
     async fn fetch_word(&self, word: &str) -> Result<(u16, serde_json::Value), reqwest::Error> {
-        let resp = self
-            .state
-            .http
-            .get(format!("{API_URL}{word}"))
-            .send()
-            .await?;
+        // Build the URL through `Url` so the user-supplied word is percent-encoded
+        // into the path segment rather than interpolated raw (which would let a
+        // word with `/`, `?`, `#`, etc. alter the request target).
+        let mut url = reqwest::Url::parse(API_URL).expect("API_URL is a valid base URL");
+        url.path_segments_mut()
+            .expect("API_URL is a base URL")
+            .pop_if_empty()
+            .push(word);
+        let resp = self.state.http.get(url).send().await?;
         let status = resp.status().as_u16();
         let json = resp.json::<serde_json::Value>().await?;
         Ok((status, json))
