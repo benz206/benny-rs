@@ -6,12 +6,12 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::{Value, json};
 use serenity::all::{
-    ActionRowComponent, ButtonStyle, ChannelId, ChannelType, Colour, ComponentInteraction,
+    ActionRowComponent, ButtonStyle, Channel, ChannelId, ChannelType, Colour, ComponentInteraction,
     ComponentInteractionDataKind, Context, CreateActionRow, CreateAttachment, CreateButton,
     CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
-    CreateModal, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, InputTextStyle,
-    Message, ModalInteraction, Timestamp,
+    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage, CreateModal,
+    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, GuildId, InputTextStyle,
+    Message, ModalInteraction, Permissions, Timestamp, UserId,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -547,6 +547,21 @@ impl Cog for EmbedCog {
                 // Restore the main view first, then report the outcome as a followup.
                 self.update(ctx, interaction, embed, components).await;
                 if let Some(channel) = channel {
+                    // The channel select is guild-scoped, but only shows that the
+                    // user can *view* a channel — confirm they can post there too.
+                    if let Some(gid) = interaction.guild_id
+                        && !self
+                            .user_can_send_in(ctx, gid, interaction.user.id, channel)
+                            .await
+                    {
+                        let followup = CreateInteractionResponseFollowup::new()
+                            .embed(embeds::error_embed(
+                                "You don't have permission to send messages in that channel.",
+                            ))
+                            .ephemeral(true);
+                        let _ = interaction.create_followup(&ctx.http, followup).await;
+                        return;
+                    }
                     let sent = channel
                         .send_message(&ctx.http, CreateMessage::new().embed(preview))
                         .await;
@@ -784,6 +799,32 @@ impl Cog for EmbedCog {
 
 impl EmbedCog {
     // ---- interactive builder helpers --------------------------------------
+
+    /// Whether `user_id` may have the bot post into `channel`: the channel must
+    /// belong to `guild_id` and the user must hold Send Messages there. Denies
+    /// on a cold cache rather than guessing.
+    async fn user_can_send_in(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+        user_id: UserId,
+        channel: ChannelId,
+    ) -> bool {
+        let gc = match channel.to_channel(&ctx.http).await {
+            Ok(Channel::Guild(gc)) if gc.guild_id == guild_id => gc,
+            _ => return false,
+        };
+        let Ok(member) = guild_id.member(&ctx.http, user_id).await else {
+            return false;
+        };
+        match ctx.cache.guild(guild_id) {
+            Some(g) => {
+                let p = g.user_permissions_in(&gc, &member);
+                p.contains(Permissions::ADMINISTRATOR) || p.contains(Permissions::SEND_MESSAGES)
+            }
+            None => false,
+        }
+    }
 
     /// Post a fresh builder message and register its session.
     async fn open_builder(&self, ctx: &Context, msg: &Message, data: EmbedData) {
@@ -1023,11 +1064,35 @@ impl EmbedCog {
                         .await;
                     return;
                 };
+                // Channel ids are global, so an unchecked id lets a user (even
+                // from a DM) make the bot post into any channel in any guild.
+                // Require a channel in this guild that the author can post to.
+                let Some(guild_id) = msg.guild_id else {
+                    let _ = msg
+                        .channel_id
+                        .say(&ctx.http, "You can only send embeds from within a server.")
+                        .await;
+                    return;
+                };
+                let target = ChannelId::new(channel_id);
+                if !self
+                    .user_can_send_in(ctx, guild_id, msg.author.id, target)
+                    .await
+                {
+                    let _ = msg
+                        .channel_id
+                        .say(
+                            &ctx.http,
+                            "That channel isn't in this server, or you can't send messages there.",
+                        )
+                        .await;
+                    return;
+                }
                 match self.text_sessions.get(&user_id) {
                     Some(session) => {
                         let embed = session.to_create_embed();
                         drop(session);
-                        match ChannelId::new(channel_id)
+                        match target
                             .send_message(&ctx.http, CreateMessage::new().embed(embed))
                             .await
                         {
