@@ -9,6 +9,9 @@ async-trait = "0.1.89"
 axum = "0.8.9"
 chrono = { version = "0.4.45", features = ["serde"] }
 dashmap = "6.2.1"
+decancer = "3.3.3"
+interim = { version = "0.2.1", default-features = false, features = ["std", "chrono_0_4"] }
+unicode_names2 = "3.1.0"
 humantime = "2.3.0"
 mongodb = "3.7.0"
 parking_lot = "0.12.5"

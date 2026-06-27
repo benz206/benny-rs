@@ -24,3 +24,11 @@ pub fn info_embed(title: &str, description: &str) -> CreateEmbed {
         .color(colors::BLURPLE)
         .timestamp(Timestamp::now())
 }
+
+pub fn warning_embed(description: &str) -> CreateEmbed {
+    CreateEmbed::new()
+        .title("Warning")
+        .description(description)
+        .color(colors::YELLOW)
+        .timestamp(Timestamp::now())
+}
