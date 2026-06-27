@@ -1,10 +1,10 @@
 use anyhow::Result;
 use serenity::all::{
     ChannelId, Client, Context, EventHandler, GatewayIntents,
-    Guild, GuildId, Interaction, Member, Message, MessageId,
-    Reaction, Ready, UnavailableGuild, User,
+    Guild, GuildChannel, GuildId, Interaction, Member, Message, MessageId,
+    Reaction, Ready, Role, RoleId, UnavailableGuild, User, VoiceState,
 };
-use serenity::model::event::MessageUpdateEvent;
+use serenity::model::event::{GuildMemberUpdateEvent, MessageUpdateEvent};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -101,6 +101,7 @@ async fn main() -> Result<()> {
 
     let intents = GatewayIntents::GUILDS
         | GatewayIntents::GUILD_MEMBERS
+        | GatewayIntents::GUILD_MODERATION
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::GUILD_MESSAGE_REACTIONS
         | GatewayIntents::GUILD_VOICE_STATES
@@ -117,6 +118,7 @@ async fn main() -> Result<()> {
         info::InfoCog,
         logging::LoggingCog,
         moderation::ModerationCog,
+        music::MusicCog,
         ocr::OcrCog,
         prefixes::PrefixesCog,
         premium::PremiumCog,
@@ -186,6 +188,42 @@ async fn main() -> Result<()> {
             self.cogs.dispatch_guild_delete(&ctx, incomplete, full).await;
         }
 
+        async fn guild_member_update(&self, ctx: Context, old: Option<Member>, new: Option<Member>, event: GuildMemberUpdateEvent) {
+            self.cogs.dispatch_member_update(&ctx, old, new, &event).await;
+        }
+
+        async fn guild_ban_addition(&self, ctx: Context, guild_id: GuildId, banned_user: User) {
+            self.cogs.dispatch_member_ban(&ctx, guild_id, &banned_user).await;
+        }
+
+        async fn guild_ban_removal(&self, ctx: Context, guild_id: GuildId, unbanned_user: User) {
+            self.cogs.dispatch_member_unban(&ctx, guild_id, &unbanned_user).await;
+        }
+
+        async fn channel_create(&self, ctx: Context, channel: GuildChannel) {
+            self.cogs.dispatch_channel_create(&ctx, &channel).await;
+        }
+
+        async fn channel_delete(&self, ctx: Context, channel: GuildChannel, _messages: Option<Vec<Message>>) {
+            self.cogs.dispatch_channel_delete(&ctx, &channel).await;
+        }
+
+        async fn guild_role_create(&self, ctx: Context, new: Role) {
+            self.cogs.dispatch_role_create(&ctx, &new).await;
+        }
+
+        async fn guild_role_delete(&self, ctx: Context, guild_id: GuildId, removed_role_id: RoleId, removed_role_data: Option<Role>) {
+            self.cogs.dispatch_role_delete(&ctx, guild_id, removed_role_id, removed_role_data).await;
+        }
+
+        async fn thread_create(&self, ctx: Context, thread: GuildChannel) {
+            self.cogs.dispatch_thread_create(&ctx, &thread).await;
+        }
+
+        async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+            self.cogs.dispatch_voice_state_update(&ctx, old, &new).await;
+        }
+
         async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
             match &interaction {
                 Interaction::Command(_) | Interaction::Autocomplete(_) => {
@@ -222,6 +260,7 @@ async fn main() -> Result<()> {
     manager.register(SentinelCog::new(app_state.clone()));
     manager.register(DevCog::new(app_state.clone()));
     manager.register(PremiumCog::new(app_state.clone()));
+    manager.register(MusicCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
     let mut client = Client::builder(token, intents)
