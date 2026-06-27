@@ -135,6 +135,7 @@ async fn main() -> Result<()> {
     struct Handler {
         cogs: Arc<CogManager>,
         state: Arc<AppState>,
+        translate: Arc<TranslateCog>,
         reminder_task_started: std::sync::atomic::AtomicBool,
     }
 
@@ -227,7 +228,7 @@ async fn main() -> Result<()> {
         async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
             match &interaction {
                 Interaction::Command(_) | Interaction::Autocomplete(_) => {
-                    slash::handle_interaction(&ctx, &interaction).await;
+                    slash::handle_interaction(&ctx, &interaction, &self.translate).await;
                 }
                 Interaction::Component(c) => {
                     self.cogs.dispatch_component(&ctx, c).await;
@@ -253,7 +254,8 @@ async fn main() -> Result<()> {
     manager.register(InfoCog::new(app_state.clone()));
     manager.register(HelpCog::new(app_state.clone()));
     manager.register(RolesCog::new(app_state.clone()));
-    manager.register(TranslateCog::new(app_state.clone()));
+    let translate_cog = TranslateCog::new(app_state.clone());
+    manager.register(translate_cog.clone());
     manager.register(DictionaryCog::new(app_state.clone()));
     manager.register(OcrCog::new(app_state.clone()));
     manager.register(EmbedCog::new(app_state.clone()));
@@ -266,6 +268,7 @@ async fn main() -> Result<()> {
     let mut client = Client::builder(token, intents)
         .event_handler(Handler {
             cogs: manager.clone(),
+            translate: translate_cog.clone(),
             state: app_state.clone(),
             reminder_task_started: std::sync::atomic::AtomicBool::new(false),
         })

@@ -136,6 +136,7 @@ impl TagsCog {
             channel_id: msg.channel_id.get().to_string(),
             args: args.to_string(),
             vars: HashMap::new(),
+            ..Default::default()
         }
     }
 
