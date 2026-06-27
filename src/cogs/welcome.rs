@@ -5,7 +5,8 @@ use crate::entities::{
 use crate::state::{AppState, GoodbyeConfig, WelcomeConfig};
 use crate::tagscript::{self, TagContext};
 use crate::utils::parse::{parse_channel_id, parse_role_id};
-use crate::utils::{colors, format};
+use crate::utils::roles::{role_rank, top_role};
+use crate::utils::{colors, format, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
@@ -13,8 +14,8 @@ use serde_json::Value;
 use serenity::all::{
     ButtonStyle, ChannelId, Colour, ComponentInteraction, Context, CreateActionRow, CreateButton,
     CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, GuildId, Member, Message, RoleId, Timestamp,
-    User,
+    CreateInteractionResponseMessage, CreateMessage, GuildId, Member, Message, Permissions, RoleId,
+    Timestamp, User, UserId,
 };
 use serenity::prelude::Mentionable;
 use std::collections::HashMap;
@@ -207,6 +208,18 @@ impl WelcomeCog {
         arg: &str,
     ) {
         let name = if is_welcome { "welcome" } else { "goodbye" };
+        // Every subcommand writes guild-wide greeting config — require Manage Server.
+        if !perms::require_perm(
+            ctx,
+            msg,
+            GuildId::new(guild_id),
+            Permissions::MANAGE_GUILD,
+            "Manage Server",
+        )
+        .await
+        {
+            return;
+        }
         match sub {
             "setup" | "" => self.cmd_setup(ctx, msg, guild_id, is_welcome).await,
             "channel" => self.cmd_channel(ctx, msg, guild_id, is_welcome, arg).await,
@@ -427,6 +440,64 @@ impl WelcomeCog {
 
     // ---- autorole commands -----------------------------------------------
 
+    /// Reject autorole targets a member shouldn't be able to hand out to every
+    /// future joiner: `@everyone`, managed/integration roles, and roles at or
+    /// above the bot's or the invoker's highest role. Returns an error string
+    /// when the role must be refused, or `None` when it is safe to store.
+    /// Best-effort: if the role table can't be loaded, the Manage Roles gate
+    /// above is the remaining protection.
+    async fn autorole_block(
+        &self,
+        ctx: &Context,
+        guild_id: u64,
+        invoker_id: u64,
+        role_id: u64,
+    ) -> Option<String> {
+        let gid = GuildId::new(guild_id);
+        let everyone = RoleId::new(guild_id);
+        if role_id == guild_id {
+            return Some("You can't use @everyone as an autorole.".to_string());
+        }
+
+        let roles = match ctx.cache.guild(gid).map(|g| g.roles.clone()) {
+            Some(r) => r,
+            None => gid.roles(&ctx.http).await.ok()?,
+        };
+        let role = match roles.get(&RoleId::new(role_id)) {
+            Some(r) => r,
+            None => return Some("That role no longer exists.".to_string()),
+        };
+        if role.managed {
+            return Some(
+                "That role is managed by an integration and can't be assigned.".to_string(),
+            );
+        }
+        let target = role_rank(role);
+
+        let bot_id = ctx.cache.current_user().id;
+        if let Ok(bot) = gid.member(&ctx.http, bot_id).await
+            && let Some(bot_top) = top_role(&bot.roles, &roles, everyone)
+            && target >= role_rank(bot_top)
+        {
+            return Some(format!(
+                "I can't assign <@&{role_id}> as an autorole — it isn't below my highest role."
+            ));
+        }
+
+        // An admin/owner may configure any assignable role; otherwise a member
+        // can't set a role above their own highest.
+        if !perms::has_perm(ctx, gid, invoker_id, Permissions::ADMINISTRATOR).await
+            && let Ok(member) = gid.member(&ctx.http, UserId::new(invoker_id)).await
+            && let Some(inv_top) = top_role(&member.roles, &roles, everyone)
+            && target >= role_rank(inv_top)
+        {
+            return Some(format!(
+                "You can't set <@&{role_id}> as an autorole — it isn't below your highest role."
+            ));
+        }
+        None
+    }
+
     async fn handle_autorole_cmd(
         &self,
         ctx: &Context,
@@ -435,6 +506,20 @@ impl WelcomeCog {
         sub: &str,
         arg: &str,
     ) {
+        // Configuring autoroles can hand a role to every future member, so the
+        // mutating subcommands require Manage Roles (read-only `list` stays open).
+        if !matches!(sub, "list" | "current" | "show")
+            && !perms::require_perm(
+                ctx,
+                msg,
+                GuildId::new(guild_id),
+                Permissions::MANAGE_ROLES,
+                "Manage Roles",
+            )
+            .await
+        {
+            return;
+        }
         match sub {
             // Replace the entire autorole set with a single role.
             "set" => {
@@ -445,6 +530,13 @@ impl WelcomeCog {
                         .await;
                     return;
                 };
+                if let Some(err) = self
+                    .autorole_block(ctx, guild_id, msg.author.id.get(), role_id)
+                    .await
+                {
+                    let _ = msg.channel_id.say(&ctx.http, err).await;
+                    return;
+                }
                 let _ = welcome_autoroles::Entity::delete_many()
                     .filter(welcome_autoroles::Column::GuildId.eq(guild_id as i64))
                     .exec(self.state.servers_orm())
@@ -476,6 +568,13 @@ impl WelcomeCog {
                         .await;
                     return;
                 };
+                if let Some(err) = self
+                    .autorole_block(ctx, guild_id, msg.author.id.get(), role_id)
+                    .await
+                {
+                    let _ = msg.channel_id.say(&ctx.http, err).await;
+                    return;
+                }
                 let res = welcome_autoroles::Entity::insert(welcome_autoroles::ActiveModel {
                     guild_id: Set(guild_id as i64),
                     role_id: Set(role_id as i64),
@@ -569,6 +668,20 @@ impl WelcomeCog {
     // ---- sticky role commands --------------------------------------------
 
     async fn handle_stickyrole_cmd(&self, ctx: &Context, msg: &Message, guild_id: u64, sub: &str) {
+        // Toggling sticky roles is a guild-wide policy change — require Manage
+        // Server (the status readout stays open).
+        if matches!(sub, "enable" | "on" | "disable" | "off")
+            && !perms::require_perm(
+                ctx,
+                msg,
+                GuildId::new(guild_id),
+                Permissions::MANAGE_GUILD,
+                "Manage Server",
+            )
+            .await
+        {
+            return;
+        }
         match sub {
             "enable" | "on" => {
                 self.set_sticky_enabled(guild_id, true).await;

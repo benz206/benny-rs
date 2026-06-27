@@ -4,6 +4,7 @@ use crate::utils::colors;
 use crate::utils::embeds::error_embed;
 use crate::utils::format::loading_bar;
 use crate::utils::parse::{parse_role_id, parse_user_id};
+use crate::utils::roles::{role_rank, top_role};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serenity::all::{
@@ -86,27 +87,6 @@ impl RolesCog {
 }
 
 // ---- role hierarchy helpers ----------------------------------------------
-
-/// Ordering key reproducing discord.py's `Role.__lt__`: a role is "lower" when
-/// its position is lower, or — at equal position — when its id is larger
-/// (created later). `role_rank(a) < role_rank(b)` matches Python `a < b`.
-fn role_rank(r: &Role) -> (i64, Reverse<u64>) {
-    (r.position as i64, Reverse(r.id.get()))
-}
-
-/// The highest role a member holds, always including `@everyone` (id == guild
-/// id) so the result is never `None` for a member of the guild.
-fn top_role<'a>(
-    member_roles: &[RoleId],
-    roles: &'a HashMap<RoleId, Role>,
-    everyone_id: RoleId,
-) -> Option<&'a Role> {
-    member_roles
-        .iter()
-        .filter_map(|rid| roles.get(rid))
-        .chain(roles.get(&everyone_id))
-        .max_by_key(|r| role_rank(r))
-}
 
 /// Resolve a role token (`<@&id>`, bare id, or case-insensitive name) to a guild
 /// role. Returns the live `Role` so callers can read its position and colour.
