@@ -27,6 +27,9 @@ struct TranslateState {
     translated: String,
 }
 
+/// Cap on retained translation sessions, to bound memory over long uptimes.
+const MAX_STATES: usize = 1000;
+
 pub struct TranslateCog {
     state: Arc<AppState>,
     /// Keyed by the id of the message that carries the buttons.
@@ -142,7 +145,8 @@ impl TranslateCog {
         {
             // Stash state under the response message id so the buttons work.
             if let Ok(sent) = interaction.get_response(&ctx.http).await {
-                self.states.insert(
+                crate::utils::cache::bounded_insert(
+                    &self.states,
                     sent.id,
                     TranslateState {
                         src: detected,
@@ -150,6 +154,7 @@ impl TranslateCog {
                         origin: content,
                         translated,
                     },
+                    MAX_STATES,
                 );
             }
         }
@@ -241,7 +246,8 @@ impl Cog for TranslateCog {
 
         match msg.channel_id.send_message(&ctx.http, builder).await {
             Ok(sent) => {
-                self.states.insert(
+                crate::utils::cache::bounded_insert(
+                    &self.states,
                     sent.id,
                     TranslateState {
                         src: detected,
@@ -249,6 +255,7 @@ impl Cog for TranslateCog {
                         origin: text,
                         translated,
                     },
+                    MAX_STATES,
                 );
             }
             Err(e) => {

@@ -333,12 +333,14 @@ impl Cog for DictionaryCog {
 
         match msg.channel_id.send_message(&ctx.http, builder).await {
             Ok(sent) => {
-                self.cache.insert(
+                crate::utils::cache::bounded_insert(
+                    &self.cache,
                     sent.id.get(),
                     CachedWord {
                         word: parsed,
                         author_id: msg.author.id.get(),
                     },
+                    2000,
                 );
             }
             Err(e) => {

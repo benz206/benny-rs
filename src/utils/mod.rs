@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod colors;
 pub mod embeds;
 pub mod format;

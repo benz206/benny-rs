@@ -878,7 +878,8 @@ impl RolesCog {
             let _ = s.delete(&ctx.http).await;
         }
 
-        self.pending.insert(
+        crate::utils::cache::bounded_insert(
+            &self.pending,
             sent.id.get(),
             PendingRoleAll {
                 guild_id: guild_id.get(),
@@ -887,6 +888,7 @@ impl RolesCog {
                 author_id,
                 member_ids,
             },
+            500,
         );
     }
 }

@@ -240,12 +240,14 @@ impl RemindersCog {
 
         match msg.channel_id.send_message(&ctx.http, builder).await {
             Ok(sent) => {
-                self.pending.insert(
+                crate::utils::cache::bounded_insert(
+                    &self.pending,
                     sent.id.get(),
                     PendingReminder {
                         content: text.to_string(),
                         chosen_time: None,
                     },
+                    1000,
                 );
             }
             Err(e) => {

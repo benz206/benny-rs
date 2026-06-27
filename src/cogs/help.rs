@@ -767,7 +767,12 @@ impl HelpCog {
         let builder = CreateMessage::new().embed(embed).components(rows);
         match channel_id.send_message(&ctx.http, builder).await {
             Ok(sent) => {
-                self.sessions.insert(sent.id.get(), invoker_id);
+                crate::utils::cache::bounded_insert(
+                    &self.sessions,
+                    sent.id.get(),
+                    invoker_id,
+                    2000,
+                );
             }
             Err(e) => tracing::error!(error = ?e, "failed to send help message"),
         }
