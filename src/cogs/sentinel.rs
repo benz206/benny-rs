@@ -65,9 +65,11 @@ impl Cog for SentinelCog {
         // The benny-rs schema (db.rs) creates `sentinels_config` without a
         // delete flag; add it idempotently (SQLite has no ADD COLUMN IF NOT
         // EXISTS, so we ignore the "duplicate column" error on later runs).
-        let _ = sqlx::query("ALTER TABLE sentinels_config ADD COLUMN delete_flagged INTEGER NOT NULL DEFAULT 0")
-            .execute(self.state.servers_db())
-            .await;
+        let _ = sqlx::query(
+            "ALTER TABLE sentinels_config ADD COLUMN delete_flagged INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(self.state.servers_db())
+        .await;
 
         // Load sentinel configs.
         let rows: Vec<(i64, i64, Option<i64>, f64, f64, f64, f64, f64, f64, f64, i64)> = sqlx::query_as(
@@ -105,7 +107,8 @@ impl Cog for SentinelCog {
                     sexual_explicit,
                 },
             );
-            self.delete_flags.insert(guild_id as u64, delete_flagged != 0);
+            self.delete_flags
+                .insert(guild_id as u64, delete_flagged != 0);
         }
 
         // Load decancer configs.
@@ -171,7 +174,8 @@ impl Cog for SentinelCog {
         let Some(api_url) = self.state.config.sentiment_api_url.clone() else {
             return;
         };
-        self.check_toxicity(ctx, msg, guild_id, &config, &api_url).await;
+        self.check_toxicity(ctx, msg, guild_id, &config, &api_url)
+            .await;
     }
 
     async fn on_member_join(&self, ctx: &Context, member: &Member) {
@@ -284,7 +288,10 @@ impl Cog for SentinelCog {
         let embed = if updated.is_empty() {
             embeds::warning_embed("No valid changes were submitted.")
         } else {
-            embeds::success_embed("Sentinel Config Saved", &format!("Updated: {}", updated.join(", ")))
+            embeds::success_embed(
+                "Sentinel Config Saved",
+                &format!("Updated: {}", updated.join(", ")),
+            )
         };
         let _ = interaction
             .create_response(
@@ -348,8 +355,8 @@ impl SentinelCog {
         let avg_score = scores.iter().sum::<f64>() / 7.0;
         let avg_threshold = thresholds.iter().sum::<f64>() / 7.0;
 
-        let triggered = scores.iter().zip(thresholds.iter()).any(|(s, t)| s > t)
-            || avg_score > avg_threshold;
+        let triggered =
+            scores.iter().zip(thresholds.iter()).any(|(s, t)| s > t) || avg_score > avg_threshold;
         if !triggered {
             return;
         }
@@ -365,7 +372,11 @@ impl SentinelCog {
             body.push_str(&bar_row(label, scores[i] * 100.0, thresholds[i] * 100.0));
             body.push('\n');
         }
-        body.push_str(&bar_row("Average", avg_score * 100.0, avg_threshold * 100.0));
+        body.push_str(&bar_row(
+            "Average",
+            avg_score * 100.0,
+            avg_threshold * 100.0,
+        ));
         body.push_str("\n```");
 
         let mut embed = CreateEmbed::new()
@@ -389,7 +400,11 @@ impl SentinelCog {
                 } else {
                     m.content.clone()
                 };
-                embed = embed.field(format!("{} - {}", m.author.name, m.author.id.get()), preview, false);
+                embed = embed.field(
+                    format!("{} - {}", m.author.name, m.author.id.get()),
+                    preview,
+                    false,
+                );
             }
         }
 
@@ -398,7 +413,12 @@ impl SentinelCog {
             .await;
 
         // Optionally delete the offending message.
-        if self.delete_flags.get(&guild_id).map(|b| *b).unwrap_or(false) {
+        if self
+            .delete_flags
+            .get(&guild_id)
+            .map(|b| *b)
+            .unwrap_or(false)
+        {
             let _ = msg.delete(&ctx.http).await;
         }
     }
@@ -452,8 +472,10 @@ impl SentinelCog {
                     .channel_id
                     .send_message(
                         &ctx.http,
-                        CreateMessage::new()
-                            .embed(embeds::success_embed("Sentinel Disabled", "Toxicity scanning is off.")),
+                        CreateMessage::new().embed(embeds::success_embed(
+                            "Sentinel Disabled",
+                            "Toxicity scanning is off.",
+                        )),
                     )
                     .await;
             }
@@ -488,10 +510,7 @@ impl SentinelCog {
                     None => {
                         let _ = msg
                             .channel_id
-                            .say(
-                                &ctx.http,
-                                "Usage: sentinel threshold <category> <0.0-1.0>",
-                            )
+                            .say(&ctx.http, "Usage: sentinel threshold <category> <0.0-1.0>")
                             .await;
                         return;
                     }
@@ -551,7 +570,10 @@ impl SentinelCog {
                         &ctx.http,
                         CreateMessage::new().embed(embeds::success_embed(
                             "Sentinel Delete Updated",
-                            &format!("Flagged messages will {} be deleted.", if on { "now" } else { "no longer" }),
+                            &format!(
+                                "Flagged messages will {} be deleted.",
+                                if on { "now" } else { "no longer" }
+                            ),
                         )),
                     )
                     .await;
@@ -584,7 +606,11 @@ impl SentinelCog {
             .log_channel_id
             .map(|c| format!("<#{c}>"))
             .unwrap_or_else(|| "Not set".to_string());
-        let delete_flagged = self.delete_flags.get(&guild_id).map(|b| *b).unwrap_or(false);
+        let delete_flagged = self
+            .delete_flags
+            .get(&guild_id)
+            .map(|b| *b)
+            .unwrap_or(false);
 
         let desc = format!(
             "**Enabled:** {}\n**Log Channel:** {}\n**Delete Flagged:** {}\n\n\
@@ -716,19 +742,28 @@ impl SentinelCog {
             "logs" => {
                 let cid = parse::parse_channel_id(arg).unwrap_or_else(|| msg.channel_id.get());
                 self.ensure_decancer_row(guild_id).await;
-                let _ = sqlx::query("UPDATE sentinels_decancer SET log_channel_id = ? WHERE guild_id = ?")
-                    .bind(cid as i64)
-                    .bind(guild_id as i64)
-                    .execute(self.state.servers_db())
-                    .await;
+                let _ = sqlx::query(
+                    "UPDATE sentinels_decancer SET log_channel_id = ? WHERE guild_id = ?",
+                )
+                .bind(cid as i64)
+                .bind(guild_id as i64)
+                .execute(self.state.servers_db())
+                .await;
                 {
                     let mut e = self
                         .decancer_cache
                         .entry(guild_id)
-                        .or_insert(DecancerConfig { enabled: false, log_channel_id: None });
+                        .or_insert(DecancerConfig {
+                            enabled: false,
+                            log_channel_id: None,
+                        });
                     e.log_channel_id = Some(cid as i64);
                 }
-                let enabled = self.decancer_cache.get(&guild_id).map(|c| c.enabled).unwrap_or(false);
+                let enabled = self
+                    .decancer_cache
+                    .get(&guild_id)
+                    .map(|c| c.enabled)
+                    .unwrap_or(false);
                 let mut embed = embeds::success_embed(
                     "Decancer Logs Channel Updated",
                     &format!("Set Decancer logs to <#{cid}>."),
@@ -785,7 +820,11 @@ impl SentinelCog {
                     .send_message(&ctx.http, CreateMessage::new().embed(embed.clone()))
                     .await;
 
-                if let Some(log_id) = self.decancer_cache.get(&guild_id).and_then(|c| c.log_channel_id) {
+                if let Some(log_id) = self
+                    .decancer_cache
+                    .get(&guild_id)
+                    .and_then(|c| c.log_channel_id)
+                {
                     let _ = ChannelId::new(log_id as u64)
                         .send_message(&ctx.http, CreateMessage::new().embed(embed))
                         .await;
@@ -822,7 +861,10 @@ impl SentinelCog {
         let mut e = self
             .decancer_cache
             .entry(guild_id)
-            .or_insert(DecancerConfig { enabled: false, log_channel_id: None });
+            .or_insert(DecancerConfig {
+                enabled: false,
+                log_channel_id: None,
+            });
         e.enabled = enabled;
     }
 }
@@ -930,10 +972,14 @@ fn build_modal_b(config: &SentinelConfig) -> CreateModal {
         threshold_input("threat", "Threat", config.threat),
         threshold_input("sexual_explicit", "Sexual Explicit", config.sexual_explicit),
     ];
-    let mut chan_input = CreateInputText::new(InputTextStyle::Short, "Log Channel (ID or #mention)", "log_channel")
-        .placeholder("Channel ID or #mention")
-        .required(false)
-        .max_length(40);
+    let mut chan_input = CreateInputText::new(
+        InputTextStyle::Short,
+        "Log Channel (ID or #mention)",
+        "log_channel",
+    )
+    .placeholder("Channel ID or #mention")
+    .required(false)
+    .max_length(40);
     if let Some(c) = config.log_channel_id {
         chan_input = chan_input.value(c.to_string());
     }

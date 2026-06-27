@@ -5,7 +5,7 @@ use serenity::all::{CreateEmbed, CreateEmbedFooter, CreateMessage, Timestamp, Us
 use serenity::http::Http;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
 /// Poll every 30s for due reminders, DM the owner, delete the row, and keep the

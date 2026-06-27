@@ -50,7 +50,9 @@ impl MusicError {
             MusicError::NotConnected => "I'm not connected to a voice channel.".to_string(),
             MusicError::NotInVoice => "You need to be in a voice channel to use that.".to_string(),
             MusicError::TrackNotFound => "No tracks found for that query.".to_string(),
-            MusicError::NotReady => "The music system isn't ready yet. Try again in a moment.".to_string(),
+            MusicError::NotReady => {
+                "The music system isn't ready yet. Try again in a moment.".to_string()
+            }
             MusicError::Failed(why) => why.clone(),
         }
     }
@@ -180,7 +182,8 @@ impl MusicCog {
     /// Resolve an existing player context, mapping the absence to a user error.
     fn player_ctx(&self, guild_id: GuildId) -> Result<PlayerContext, MusicError> {
         let lava = self.lava().ok_or(MusicError::NotReady)?;
-        lava.get_player_context(guild_id).ok_or(MusicError::NotConnected)
+        lava.get_player_context(guild_id)
+            .ok_or(MusicError::NotConnected)
     }
 
     async fn send_embed(&self, ctx: &Context, channel: ChannelId, embed: CreateEmbed) {
@@ -190,11 +193,13 @@ impl MusicCog {
     }
 
     async fn send_error(&self, ctx: &Context, channel: ChannelId, err: MusicError) {
-        self.send_embed(ctx, channel, embeds::error_embed(&err.message())).await;
+        self.send_embed(ctx, channel, embeds::error_embed(&err.message()))
+            .await;
     }
 
     async fn send_success(&self, ctx: &Context, channel: ChannelId, title: &str, desc: &str) {
-        self.send_embed(ctx, channel, embeds::success_embed(title, desc)).await;
+        self.send_embed(ctx, channel, embeds::success_embed(title, desc))
+            .await;
     }
 
     // --- voice gateway plumbing (no songbird) -----------------------------
@@ -203,7 +208,10 @@ impl MusicCog {
     /// cache. Scoped so the cache reference is dropped before any await.
     fn user_voice_channel(ctx: &Context, guild_id: GuildId, user_id: UserId) -> Option<ChannelId> {
         let guild = ctx.cache.guild(guild_id)?;
-        guild.voice_states.get(&user_id).and_then(|vs| vs.channel_id)
+        guild
+            .voice_states
+            .get(&user_id)
+            .and_then(|vs| vs.channel_id)
     }
 
     /// Send a raw gateway voice-state-update (opcode 4). `channel` = None leaves.
@@ -254,20 +262,25 @@ impl MusicCog {
 
     async fn cmd_play(&self, ctx: &Context, msg: &Message, guild_id: GuildId, query: &str) {
         if query.is_empty() {
-            self.send_error(ctx, msg.channel_id, MusicError::Failed(
-                "Please provide a search query or URL.".to_string(),
-            )).await;
+            self.send_error(
+                ctx,
+                msg.channel_id,
+                MusicError::Failed("Please provide a search query or URL.".to_string()),
+            )
+            .await;
             return;
         }
         let Some(lava) = self.lava() else {
-            self.send_error(ctx, msg.channel_id, MusicError::NotReady).await;
+            self.send_error(ctx, msg.channel_id, MusicError::NotReady)
+                .await;
             return;
         };
 
         // The invoker must be in a voice channel; join it if we're not already in one.
         if lava.get_player_context(guild_id).is_none() {
             let Some(voice) = Self::user_voice_channel(ctx, guild_id, msg.author.id) else {
-                self.send_error(ctx, msg.channel_id, MusicError::NotInVoice).await;
+                self.send_error(ctx, msg.channel_id, MusicError::NotInVoice)
+                    .await;
                 return;
             };
             if let Err(e) = self.join(ctx, guild_id, voice, msg.channel_id).await {
@@ -277,7 +290,8 @@ impl MusicCog {
         }
 
         let Some(player) = lava.get_player_context(guild_id) else {
-            self.send_error(ctx, msg.channel_id, MusicError::NotConnected).await;
+            self.send_error(ctx, msg.channel_id, MusicError::NotConnected)
+                .await;
             return;
         };
 
@@ -292,9 +306,12 @@ impl MusicCog {
         let loaded = match lava.load_tracks(guild_id, &query).await {
             Ok(t) => t,
             Err(e) => {
-                self.send_error(ctx, msg.channel_id, MusicError::Failed(format!(
-                    "Failed to load tracks: {e}"
-                ))).await;
+                self.send_error(
+                    ctx,
+                    msg.channel_id,
+                    MusicError::Failed(format!("Failed to load tracks: {e}")),
+                )
+                .await;
                 return;
             }
         };
@@ -304,21 +321,22 @@ impl MusicCog {
             Some(TrackLoadData::Search(list)) => match list.into_iter().next() {
                 Some(t) => vec![t.into()],
                 None => {
-                    self.send_error(ctx, msg.channel_id, MusicError::TrackNotFound).await;
+                    self.send_error(ctx, msg.channel_id, MusicError::TrackNotFound)
+                        .await;
                     return;
                 }
             },
-            Some(TrackLoadData::Playlist(pl)) => {
-                pl.tracks.into_iter().map(Into::into).collect()
-            }
+            Some(TrackLoadData::Playlist(pl)) => pl.tracks.into_iter().map(Into::into).collect(),
             _ => {
-                self.send_error(ctx, msg.channel_id, MusicError::TrackNotFound).await;
+                self.send_error(ctx, msg.channel_id, MusicError::TrackNotFound)
+                    .await;
                 return;
             }
         };
 
         if tracks.is_empty() {
-            self.send_error(ctx, msg.channel_id, MusicError::TrackNotFound).await;
+            self.send_error(ctx, msg.channel_id, MusicError::TrackNotFound)
+                .await;
             return;
         }
 
@@ -332,9 +350,12 @@ impl MusicCog {
 
         let queue = player.get_queue();
         if let Err(e) = queue.append(tracks.into()) {
-            self.send_error(ctx, msg.channel_id, MusicError::Failed(format!(
-                "Failed to queue tracks: {e}"
-            ))).await;
+            self.send_error(
+                ctx,
+                msg.channel_id,
+                MusicError::Failed(format!("Failed to queue tracks: {e}")),
+            )
+            .await;
             return;
         }
 
@@ -350,21 +371,30 @@ impl MusicCog {
         } else {
             format!("Added **{} - {}** to the queue.", first.author, first.title)
         };
-        self.send_success(ctx, msg.channel_id, "Queued", &desc).await;
+        self.send_success(ctx, msg.channel_id, "Queued", &desc)
+            .await;
     }
 
     async fn cmd_disconnect(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
         let Some(lava) = self.lava() else {
-            self.send_error(ctx, msg.channel_id, MusicError::NotReady).await;
+            self.send_error(ctx, msg.channel_id, MusicError::NotReady)
+                .await;
             return;
         };
         if lava.get_player_context(guild_id).is_none() {
-            self.send_error(ctx, msg.channel_id, MusicError::NotConnected).await;
+            self.send_error(ctx, msg.channel_id, MusicError::NotConnected)
+                .await;
             return;
         }
         let _ = lava.delete_player(guild_id).await;
         Self::send_voice_state(ctx, guild_id, None);
-        self.send_success(ctx, msg.channel_id, "Disconnected", "Left the voice channel.").await;
+        self.send_success(
+            ctx,
+            msg.channel_id,
+            "Disconnected",
+            "Left the voice channel.",
+        )
+        .await;
     }
 
     async fn cmd_pause(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
@@ -375,9 +405,13 @@ impl MusicCog {
         match player.get_player().await {
             Ok(data) if data.track.is_some() => {
                 let _ = player.set_pause(true).await;
-                self.send_success(ctx, msg.channel_id, "Paused", "Playback paused.").await;
+                self.send_success(ctx, msg.channel_id, "Paused", "Playback paused.")
+                    .await;
             }
-            _ => self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying).await,
+            _ => {
+                self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying)
+                    .await
+            }
         }
     }
 
@@ -389,9 +423,13 @@ impl MusicCog {
         match player.get_player().await {
             Ok(data) if data.track.is_some() => {
                 let _ = player.set_pause(false).await;
-                self.send_success(ctx, msg.channel_id, "Resumed", "Playback resumed.").await;
+                self.send_success(ctx, msg.channel_id, "Resumed", "Playback resumed.")
+                    .await;
             }
-            _ => self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying).await,
+            _ => {
+                self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying)
+                    .await
+            }
         }
     }
 
@@ -412,9 +450,15 @@ impl MusicCog {
                     )
                     .await;
                 }
-                None => self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying).await,
+                None => {
+                    self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying)
+                        .await
+                }
             },
-            Err(_) => self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying).await,
+            Err(_) => {
+                self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying)
+                    .await
+            }
         }
     }
 
@@ -425,16 +469,25 @@ impl MusicCog {
         };
         let _ = player.get_queue().clear();
         let _ = player.stop_now().await;
-        self.send_success(ctx, msg.channel_id, "Stopped", "Stopped playback and cleared the queue.").await;
+        self.send_success(
+            ctx,
+            msg.channel_id,
+            "Stopped",
+            "Stopped playback and cleared the queue.",
+        )
+        .await;
     }
 
     async fn cmd_volume(&self, ctx: &Context, msg: &Message, guild_id: GuildId, args: &str) {
         let volume: u16 = match args.trim().parse() {
             Ok(v) if (1..=100).contains(&v) => v,
             _ => {
-                self.send_error(ctx, msg.channel_id, MusicError::Failed(
-                    "Volume must be a number between 1 and 100.".to_string(),
-                )).await;
+                self.send_error(
+                    ctx,
+                    msg.channel_id,
+                    MusicError::Failed("Volume must be a number between 1 and 100.".to_string()),
+                )
+                .await;
                 return;
             }
         };
@@ -443,7 +496,13 @@ impl MusicCog {
             Err(e) => return self.send_error(ctx, msg.channel_id, e).await,
         };
         let _ = player.set_volume(volume).await;
-        self.send_success(ctx, msg.channel_id, "Volume", &format!("Volume set to **{volume}%**.")).await;
+        self.send_success(
+            ctx,
+            msg.channel_id,
+            "Volume",
+            &format!("Volume set to **{volume}%**."),
+        )
+        .await;
     }
 
     async fn cmd_nowplaying(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
@@ -468,9 +527,15 @@ impl MusicCog {
                     }
                     self.send_embed(ctx, msg.channel_id, embed).await;
                 }
-                None => self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying).await,
+                None => {
+                    self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying)
+                        .await
+                }
             },
-            Err(_) => self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying).await,
+            Err(_) => {
+                self.send_error(ctx, msg.channel_id, MusicError::NothingPlaying)
+                    .await
+            }
         }
     }
 
@@ -487,7 +552,8 @@ impl MusicCog {
         let tracks = player.get_queue().get_queue().await.unwrap_or_default();
 
         if now_playing.is_none() && tracks.is_empty() {
-            self.send_error(ctx, msg.channel_id, MusicError::QueueEmpty).await;
+            self.send_error(ctx, msg.channel_id, MusicError::QueueEmpty)
+                .await;
             return;
         }
 

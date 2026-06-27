@@ -14,7 +14,7 @@ use serenity::all::{
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// Component custom_id namespace for this cog. `on_component` early-returns on
 /// anything that does not begin with this.
@@ -300,7 +300,10 @@ impl RolesCog {
         guild_id: GuildId,
         user_id: u64,
     ) -> Option<Permissions> {
-        let member = guild_id.member(&ctx.http, UserId::new(user_id)).await.ok()?;
+        let member = guild_id
+            .member(&ctx.http, UserId::new(user_id))
+            .await
+            .ok()?;
         if let Some(guild) = ctx.cache.guild(guild_id) {
             return Some(guild.member_permissions(&member));
         }
@@ -355,15 +358,15 @@ impl RolesCog {
 
     // ---- single-member commands ------------------------------------------
 
-    async fn cmd_role_add(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        guild_id: GuildId,
-        rest: &str,
-    ) {
+    async fn cmd_role_add(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
-            .require_perms(ctx, msg, guild_id, Permissions::MANAGE_ROLES, "Manage Roles")
+            .require_perms(
+                ctx,
+                msg,
+                guild_id,
+                Permissions::MANAGE_ROLES,
+                "Manage Roles",
+            )
             .await
         {
             return;
@@ -385,7 +388,8 @@ impl RolesCog {
         let everyone = RoleId::new(guild_id.get());
 
         let Some(role) = resolve_role(&roles, role_token) else {
-            self.reply_error(ctx, msg, "Could not find that role.").await;
+            self.reply_error(ctx, msg, "Could not find that role.")
+                .await;
             return;
         };
         let role_id = role.id;
@@ -455,15 +459,15 @@ impl RolesCog {
         self.reply_embed(ctx, msg, embed).await;
     }
 
-    async fn cmd_role_remove(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        guild_id: GuildId,
-        rest: &str,
-    ) {
+    async fn cmd_role_remove(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
-            .require_perms(ctx, msg, guild_id, Permissions::MANAGE_ROLES, "Manage Roles")
+            .require_perms(
+                ctx,
+                msg,
+                guild_id,
+                Permissions::MANAGE_ROLES,
+                "Manage Roles",
+            )
             .await
         {
             return;
@@ -485,7 +489,8 @@ impl RolesCog {
         let everyone = RoleId::new(guild_id.get());
 
         let Some(role) = resolve_role(&roles, role_token) else {
-            self.reply_error(ctx, msg, "Could not find that role.").await;
+            self.reply_error(ctx, msg, "Could not find that role.")
+                .await;
             return;
         };
         let role_id = role.id;
@@ -542,15 +547,15 @@ impl RolesCog {
 
     /// `role custom <member> <+role|-role|!role ...>`: `+` adds, `-` removes, `!`
     /// toggles per current membership. Replicates base.py's `role_custom_command`.
-    async fn cmd_role_custom(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        guild_id: GuildId,
-        rest: &str,
-    ) {
+    async fn cmd_role_custom(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
-            .require_perms(ctx, msg, guild_id, Permissions::MANAGE_ROLES, "Manage Roles")
+            .require_perms(
+                ctx,
+                msg,
+                guild_id,
+                Permissions::MANAGE_ROLES,
+                "Manage Roles",
+            )
             .await
         {
             return;
@@ -811,7 +816,8 @@ impl RolesCog {
             }
         };
         let Some(role) = resolve_role(&roles, role_token) else {
-            self.reply_error(ctx, msg, "Could not find that role.").await;
+            self.reply_error(ctx, msg, "Could not find that role.")
+                .await;
             return;
         };
         let role_id = role.id;
@@ -913,10 +919,7 @@ impl RolesCog {
 }
 
 /// Page through every guild member (the gateway returns at most 1000 per call).
-async fn fetch_all_members(
-    http: &Http,
-    guild_id: GuildId,
-) -> Result<Vec<Member>, serenity::Error> {
+async fn fetch_all_members(http: &Http, guild_id: GuildId) -> Result<Vec<Member>, serenity::Error> {
     let mut all: Vec<Member> = Vec::new();
     let mut after: Option<UserId> = None;
     loop {
@@ -989,7 +992,12 @@ fn finished_embed(
 
 /// Apply a confirmed bulk op: ~0.5s between calls, periodic progress edits, and
 /// a final summary edit. Targets are pre-filtered, so each call is a real change.
-async fn run_bulk(http: Arc<Http>, channel_id: serenity::all::ChannelId, message_id: u64, op: PendingRoleAll) {
+async fn run_bulk(
+    http: Arc<Http>,
+    channel_id: serenity::all::ChannelId,
+    message_id: u64,
+    op: PendingRoleAll,
+) {
     let guild_id = GuildId::new(op.guild_id);
     let role_id = RoleId::new(op.role_id);
     let total = op.member_ids.len();
@@ -1001,7 +1009,10 @@ async fn run_bulk(http: Arc<Http>, channel_id: serenity::all::ChannelId, message
         let user_id = UserId::new(*uid);
         let result = match op.action {
             BulkAction::Add => http.add_member_role(guild_id, user_id, role_id, None).await,
-            BulkAction::Remove => http.remove_member_role(guild_id, user_id, role_id, None).await,
+            BulkAction::Remove => {
+                http.remove_member_role(guild_id, user_id, role_id, None)
+                    .await
+            }
         };
         match result {
             Ok(_) => success += 1,
@@ -1016,8 +1027,9 @@ async fn run_bulk(http: Arc<Http>, channel_id: serenity::all::ChannelId, message
                 .edit_message(
                     &http,
                     msg_id,
-                    EditMessage::new()
-                        .embed(progress_embed(op.action, op.role_id, processed, total, success, fail)),
+                    EditMessage::new().embed(progress_embed(
+                        op.action, op.role_id, processed, total, success, fail,
+                    )),
                 )
                 .await;
         }

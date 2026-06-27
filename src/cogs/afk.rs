@@ -33,9 +33,10 @@ impl Cog for AfkCog {
                 .unwrap_or_default();
 
         for (guild_id, user_id, message, set_at) in rows {
-            self.state
-                .afk_cache
-                .insert((guild_id as u64, user_id as u64), AfkEntry { message, set_at });
+            self.state.afk_cache.insert(
+                (guild_id as u64, user_id as u64),
+                AfkEntry { message, set_at },
+            );
         }
         tracing::info!("AFK cache loaded ({} entries)", self.state.afk_cache.len());
     }
@@ -129,7 +130,8 @@ impl AfkCog {
                     .execute(self.state.servers_db())
                     .await;
 
-                let dur = humanize_duration(Duration::from_secs((now - entry.set_at).max(0) as u64));
+                let dur =
+                    humanize_duration(Duration::from_secs((now - entry.set_at).max(0) as u64));
                 let embed = CreateEmbed::new()
                     .title("Removed AFK")
                     .description(format!(

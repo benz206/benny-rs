@@ -160,7 +160,9 @@ fn string_index(s: &str, parameter: Option<&str>, payload: Option<&str>) -> Stri
     // Plain integer index.
     if let Ok(v) = trimmed.parse::<i64>() {
         let i = if trimmed.starts_with('-') { v } else { v - 1 };
-        return at(i).map(|u| parts[u].to_string()).unwrap_or_else(|| s.to_string());
+        return at(i)
+            .map(|u| parts[u].to_string())
+            .unwrap_or_else(|| s.to_string());
     }
 
     // `+n` (join head) / `n+` (join tail).

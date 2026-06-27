@@ -8,7 +8,7 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 // Simple data types for caches
 #[derive(Debug, Clone)]
@@ -112,13 +112,27 @@ impl AppState {
         }
     }
 
-    pub fn http(&self) -> &HttpClient { &self.http }
-    pub fn servers_db(&self) -> &SqlitePool { &self.servers_db }
-    pub fn users_db(&self) -> &SqlitePool { &self.users_db }
-    pub fn prefix(&self) -> &str { &self.config.prefix }
-    pub fn latency(&self) -> Arc<Mutex<Vec<u64>>> { self.latency_ms.clone() }
-    pub fn uptime_secs(&self) -> u64 { self.start_time.elapsed().as_secs() }
-    pub fn is_owner(&self, user_id: u64) -> bool { self.config.owners.contains(&user_id) }
+    pub fn http(&self) -> &HttpClient {
+        &self.http
+    }
+    pub fn servers_db(&self) -> &SqlitePool {
+        &self.servers_db
+    }
+    pub fn users_db(&self) -> &SqlitePool {
+        &self.users_db
+    }
+    pub fn prefix(&self) -> &str {
+        &self.config.prefix
+    }
+    pub fn latency(&self) -> Arc<Mutex<Vec<u64>>> {
+        self.latency_ms.clone()
+    }
+    pub fn uptime_secs(&self) -> u64 {
+        self.start_time.elapsed().as_secs()
+    }
+    pub fn is_owner(&self, user_id: u64) -> bool {
+        self.config.owners.contains(&user_id)
+    }
     /// The Lavalink client, if it has been initialized at `ready`.
     pub fn lavalink(&self) -> Option<lavalink_rs::client::LavalinkClient> {
         self.lavalink.get().cloned()
@@ -131,7 +145,9 @@ pub fn start_latency_task(state: Arc<AppState>) {
         loop {
             {
                 let mut history = state.latency_ms.lock();
-                if history.len() >= 60 { history.remove(0); }
+                if history.len() >= 60 {
+                    history.remove(0);
+                }
                 history.push(value);
             }
             value = value.saturating_add(1);

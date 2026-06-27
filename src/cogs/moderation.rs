@@ -11,9 +11,9 @@ use serenity::all::{
     Context, CreateEmbed, CreateEmbedFooter, CreateMessage, EditRole, GuildId, Http, Message,
     PermissionOverwrite, PermissionOverwriteType, Permissions, RoleId, Timestamp, UserId,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::time::{Duration, sleep};
 
 /// How often the background task scans for expired timed infractions.
 const EXPIRY_INTERVAL_SECS: u64 = 30;
@@ -105,7 +105,10 @@ impl ModerationCog {
         guild_id: GuildId,
         user_id: u64,
     ) -> Option<Permissions> {
-        let member = guild_id.member(&ctx.http, UserId::new(user_id)).await.ok()?;
+        let member = guild_id
+            .member(&ctx.http, UserId::new(user_id))
+            .await
+            .ok()?;
         if let Some(guild) = ctx.cache.guild(guild_id) {
             return Some(guild.member_permissions(&member));
         }
@@ -141,7 +144,13 @@ impl ModerationCog {
 
     /// Reject self-targeting and bot-targeting. Reserves mod.py's exact ban
     /// quips for the ban action. Returns an error string when blocked.
-    fn self_guard(&self, ctx: &Context, msg: &Message, target_id: u64, action: &str) -> Option<String> {
+    fn self_guard(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        target_id: u64,
+        action: &str,
+    ) -> Option<String> {
         let bot_id = ctx.cache.current_user().id.get();
         if target_id == msg.author.id.get() {
             return Some(if action == "ban" {
@@ -245,7 +254,13 @@ impl ModerationCog {
 
     async fn cmd_warn(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
-            .require_perm(ctx, msg, guild_id, Permissions::MODERATE_MEMBERS, "Moderate Members")
+            .require_perm(
+                ctx,
+                msg,
+                guild_id,
+                Permissions::MODERATE_MEMBERS,
+                "Moderate Members",
+            )
             .await
         {
             return;
@@ -253,7 +268,8 @@ impl ModerationCog {
         let (target_str, reason) = split_first(rest);
         let reason = default_reason(reason);
         let Some(target_id) = parse_user_id(target_str) else {
-            self.reply_error(ctx, msg, "Usage: `warn <@member> [reason]`").await;
+            self.reply_error(ctx, msg, "Usage: `warn <@member> [reason]`")
+                .await;
             return;
         };
         if let Some(err) = self.self_guard(ctx, msg, target_id, "warn") {
@@ -262,7 +278,14 @@ impl ModerationCog {
         }
 
         let case = self
-            .create_case(guild_id, "warn", target_id, msg.author.id.get(), &reason, None)
+            .create_case(
+                guild_id,
+                "warn",
+                target_id,
+                msg.author.id.get(),
+                &reason,
+                None,
+            )
             .await;
         let name = self.fetch_name(ctx, target_id).await;
         let embed = Self::action_embed("Warned", &name, &reason, colors::YELLOW, msg, case);
@@ -271,7 +294,13 @@ impl ModerationCog {
 
     async fn cmd_kick(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
-            .require_perm(ctx, msg, guild_id, Permissions::KICK_MEMBERS, "Kick Members")
+            .require_perm(
+                ctx,
+                msg,
+                guild_id,
+                Permissions::KICK_MEMBERS,
+                "Kick Members",
+            )
             .await
         {
             return;
@@ -279,7 +308,8 @@ impl ModerationCog {
         let (target_str, reason) = split_first(rest);
         let reason = default_reason(reason);
         let Some(target_id) = parse_user_id(target_str) else {
-            self.reply_error(ctx, msg, "Usage: `kick <@member> [reason]`").await;
+            self.reply_error(ctx, msg, "Usage: `kick <@member> [reason]`")
+                .await;
             return;
         };
         if let Some(err) = self.self_guard(ctx, msg, target_id, "kick") {
@@ -291,12 +321,20 @@ impl ModerationCog {
             .kick_with_reason(&ctx.http, UserId::new(target_id), &reason)
             .await
         {
-            self.reply_error(ctx, msg, &format!("Failed to kick: {e}")).await;
+            self.reply_error(ctx, msg, &format!("Failed to kick: {e}"))
+                .await;
             return;
         }
 
         let case = self
-            .create_case(guild_id, "kick", target_id, msg.author.id.get(), &reason, None)
+            .create_case(
+                guild_id,
+                "kick",
+                target_id,
+                msg.author.id.get(),
+                &reason,
+                None,
+            )
             .await;
         let name = self.fetch_name(ctx, target_id).await;
         let embed = Self::action_embed("Kicked", &name, &reason, colors::RED, msg, case);
@@ -329,17 +367,26 @@ impl ModerationCog {
             .ban_with_reason(&ctx.http, UserId::new(target_id), delete_days, &reason)
             .await
         {
-            self.reply_error(ctx, msg, &format!("Failed to ban: {e}")).await;
+            self.reply_error(ctx, msg, &format!("Failed to ban: {e}"))
+                .await;
             return;
         }
 
         let case = self
-            .create_case(guild_id, "ban", target_id, msg.author.id.get(), &reason, None)
+            .create_case(
+                guild_id,
+                "ban",
+                target_id,
+                msg.author.id.get(),
+                &reason,
+                None,
+            )
             .await;
         let name = self.fetch_name(ctx, target_id).await;
         let mut description = reason.clone();
         if delete_days > 0 {
-            description = format!("{description}\n\nDeleted the last **{delete_days}** day(s) of messages.");
+            description =
+                format!("{description}\n\nDeleted the last **{delete_days}** day(s) of messages.");
         }
         let embed = Self::action_embed("Banned", &name, &description, colors::RED, msg, case);
         self.reply_embed(ctx, msg, embed).await;
@@ -355,24 +402,35 @@ impl ModerationCog {
         let (target_str, reason) = split_first(rest);
         let reason = default_reason(reason);
         let Some(target_id) = parse_user_id(target_str) else {
-            self.reply_error(ctx, msg, "Usage: `unban <user_id> [reason]`").await;
+            self.reply_error(ctx, msg, "Usage: `unban <user_id> [reason]`")
+                .await;
             return;
         };
 
         if let Err(e) = guild_id.unban(&ctx.http, UserId::new(target_id)).await {
-            self.reply_error(ctx, msg, &format!("Failed to unban: {e}")).await;
+            self.reply_error(ctx, msg, &format!("Failed to unban: {e}"))
+                .await;
             return;
         }
 
         // Drop any scheduled temp-ban expiry for this user.
-        let _ = sqlx::query("DELETE FROM mod_timed WHERE guild_id = ? AND user_id = ? AND action = 'ban'")
-            .bind(guild_id.get() as i64)
-            .bind(target_id as i64)
-            .execute(self.state.servers_db())
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM mod_timed WHERE guild_id = ? AND user_id = ? AND action = 'ban'",
+        )
+        .bind(guild_id.get() as i64)
+        .bind(target_id as i64)
+        .execute(self.state.servers_db())
+        .await;
 
         let case = self
-            .create_case(guild_id, "unban", target_id, msg.author.id.get(), &reason, None)
+            .create_case(
+                guild_id,
+                "unban",
+                target_id,
+                msg.author.id.get(),
+                &reason,
+                None,
+            )
             .await;
         let name = self.fetch_name(ctx, target_id).await;
         let embed = Self::action_embed("Unbanned", &name, &reason, colors::GREEN, msg, case);
@@ -381,7 +439,13 @@ impl ModerationCog {
 
     async fn cmd_mute(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
-            .require_perm(ctx, msg, guild_id, Permissions::MANAGE_ROLES, "Manage Roles")
+            .require_perm(
+                ctx,
+                msg,
+                guild_id,
+                Permissions::MANAGE_ROLES,
+                "Manage Roles",
+            )
             .await
         {
             return;
@@ -426,7 +490,14 @@ impl ModerationCog {
         }
 
         let case = self
-            .create_case(guild_id, "mute", target_id, msg.author.id.get(), &reason, Some(expires_ts))
+            .create_case(
+                guild_id,
+                "mute",
+                target_id,
+                msg.author.id.get(),
+                &reason,
+                Some(expires_ts),
+            )
             .await;
 
         // Record the active timed infraction for the expiry sweeper. When Mongo
@@ -455,23 +526,31 @@ impl ModerationCog {
 
     async fn cmd_unmute(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
-            .require_perm(ctx, msg, guild_id, Permissions::MANAGE_ROLES, "Manage Roles")
+            .require_perm(
+                ctx,
+                msg,
+                guild_id,
+                Permissions::MANAGE_ROLES,
+                "Manage Roles",
+            )
             .await
         {
             return;
         }
         let (target_str, _) = split_first(rest);
         let Some(target_id) = parse_user_id(target_str) else {
-            self.reply_error(ctx, msg, "Usage: `unmute <@member>`").await;
+            self.reply_error(ctx, msg, "Usage: `unmute <@member>`")
+                .await;
             return;
         };
 
-        let stored: Option<i64> = sqlx::query_scalar("SELECT mute_role_id FROM mod_config WHERE guild_id = ?")
-            .bind(guild_id.get() as i64)
-            .fetch_optional(self.state.servers_db())
-            .await
-            .ok()
-            .flatten();
+        let stored: Option<i64> =
+            sqlx::query_scalar("SELECT mute_role_id FROM mod_config WHERE guild_id = ?")
+                .bind(guild_id.get() as i64)
+                .fetch_optional(self.state.servers_db())
+                .await
+                .ok()
+                .flatten();
         let Some(role_id) = stored.map(|r| RoleId::new(r as u64)) else {
             self.reply_error(ctx, msg, "No **Muted** role is configured for this server.")
                 .await;
@@ -489,14 +568,23 @@ impl ModerationCog {
         }
 
         // Clear scheduled expiry rows for this user's mute.
-        let _ = sqlx::query("DELETE FROM mod_timed WHERE guild_id = ? AND user_id = ? AND action = 'mute'")
-            .bind(guild_id.get() as i64)
-            .bind(target_id as i64)
-            .execute(self.state.servers_db())
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM mod_timed WHERE guild_id = ? AND user_id = ? AND action = 'mute'",
+        )
+        .bind(guild_id.get() as i64)
+        .bind(target_id as i64)
+        .execute(self.state.servers_db())
+        .await;
 
         let case = self
-            .create_case(guild_id, "unmute", target_id, msg.author.id.get(), "Unmuted", None)
+            .create_case(
+                guild_id,
+                "unmute",
+                target_id,
+                msg.author.id.get(),
+                "Unmuted",
+                None,
+            )
             .await;
         let name = self.fetch_name(ctx, target_id).await;
         let embed = Self::action_embed("Unmuted", &name, "Unmuted", colors::GREEN, msg, case);
@@ -515,7 +603,8 @@ impl ModerationCog {
         let mongo = match &self.state.mongo {
             Some(m) => m,
             None => {
-                self.reply_error(ctx, msg, "Moderation database unavailable.").await;
+                self.reply_error(ctx, msg, "Moderation database unavailable.")
+                    .await;
                 return;
             }
         };
@@ -545,7 +634,8 @@ impl ModerationCog {
         let mongo = match &self.state.mongo {
             Some(m) => m,
             None => {
-                self.reply_error(ctx, msg, "Moderation database unavailable.").await;
+                self.reply_error(ctx, msg, "Moderation database unavailable.")
+                    .await;
                 return;
             }
         };
@@ -558,13 +648,20 @@ impl ModerationCog {
             Ok(mut cases) => {
                 cases.sort_by_key(|c| c.case_number);
                 let mut embed = CreateEmbed::new()
-                    .title(format!("Cases for {}", self.fetch_name(ctx, target_id).await))
+                    .title(format!(
+                        "Cases for {}",
+                        self.fetch_name(ctx, target_id).await
+                    ))
                     .description(format!("<@{target_id}> has **{}** case(s).", cases.len()))
                     .color(colors::BLURPLE)
                     .timestamp(Timestamp::now());
                 for c in cases.iter().take(15) {
                     embed = embed.field(
-                        format!("#{} \u{2022} {}", c.case_number, c.action_type.to_uppercase()),
+                        format!(
+                            "#{} \u{2022} {}",
+                            c.case_number,
+                            c.action_type.to_uppercase()
+                        ),
                         format!(
                             "**Reason:** {}\n**Moderator:** <@{}>",
                             format::truncate(&c.reason, 200),
@@ -583,7 +680,8 @@ impl ModerationCog {
             }
             Err(e) => {
                 tracing::error!(error = ?e, "failed to get cases");
-                self.reply_error(ctx, msg, "Failed to retrieve cases.").await;
+                self.reply_error(ctx, msg, "Failed to retrieve cases.")
+                    .await;
             }
         }
     }
@@ -592,14 +690,16 @@ impl ModerationCog {
         let mongo = match &self.state.mongo {
             Some(m) => m,
             None => {
-                self.reply_error(ctx, msg, "Moderation database unavailable.").await;
+                self.reply_error(ctx, msg, "Moderation database unavailable.")
+                    .await;
                 return;
             }
         };
 
         match db_mongo::recent_cases(mongo, guild_id.get() as i64, 15).await {
             Ok(cases) if cases.is_empty() => {
-                self.reply_error(ctx, msg, "No moderation actions recorded yet.").await;
+                self.reply_error(ctx, msg, "No moderation actions recorded yet.")
+                    .await;
             }
             Ok(cases) => {
                 let mut embed = CreateEmbed::new()
@@ -608,7 +708,11 @@ impl ModerationCog {
                     .timestamp(Timestamp::now());
                 for c in &cases {
                     embed = embed.field(
-                        format!("#{} \u{2022} {}", c.case_number, c.action_type.to_uppercase()),
+                        format!(
+                            "#{} \u{2022} {}",
+                            c.case_number,
+                            c.action_type.to_uppercase()
+                        ),
                         format!(
                             "**Target:** <@{}>\n**Moderator:** <@{}>\n**Reason:** {}",
                             c.target_id,
@@ -622,7 +726,8 @@ impl ModerationCog {
             }
             Err(e) => {
                 tracing::error!(error = ?e, "failed to get modlog");
-                self.reply_error(ctx, msg, "Failed to retrieve the modlog.").await;
+                self.reply_error(ctx, msg, "Failed to retrieve the modlog.")
+                    .await;
             }
         }
     }
@@ -635,12 +740,13 @@ impl ModerationCog {
     async fn ensure_mute_role(&self, ctx: &Context, guild_id: GuildId) -> Option<RoleId> {
         let gid = guild_id.get() as i64;
 
-        let stored: Option<i64> = sqlx::query_scalar("SELECT mute_role_id FROM mod_config WHERE guild_id = ?")
-            .bind(gid)
-            .fetch_optional(self.state.servers_db())
-            .await
-            .ok()
-            .flatten();
+        let stored: Option<i64> =
+            sqlx::query_scalar("SELECT mute_role_id FROM mod_config WHERE guild_id = ?")
+                .bind(gid)
+                .fetch_optional(self.state.servers_db())
+                .await
+                .ok()
+                .flatten();
 
         // Reuse the stored role only if it still exists in the guild.
         if let Some(rid) = stored {
@@ -675,7 +781,9 @@ impl ModerationCog {
                 kind: PermissionOverwriteType::Role(role.id),
             };
             for (_id, channel) in channels {
-                let _ = channel.create_permission(&ctx.http, overwrite.clone()).await;
+                let _ = channel
+                    .create_permission(&ctx.http, overwrite.clone())
+                    .await;
             }
         }
 
@@ -693,12 +801,13 @@ impl ModerationCog {
 
     /// Next mod_timed primary key when no Mongo case number is available.
     async fn fallback_case_number(&self, guild_id: GuildId) -> i64 {
-        let max: Option<i64> = sqlx::query_scalar("SELECT MAX(case_number) FROM mod_timed WHERE guild_id = ?")
-            .bind(guild_id.get() as i64)
-            .fetch_optional(self.state.servers_db())
-            .await
-            .ok()
-            .flatten();
+        let max: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(case_number) FROM mod_timed WHERE guild_id = ?")
+                .bind(guild_id.get() as i64)
+                .fetch_optional(self.state.servers_db())
+                .await
+                .ok()
+                .flatten();
         max.unwrap_or(0) + 1
     }
 }
@@ -768,7 +877,11 @@ fn extract_duration(after: &str) -> Option<(DateTime<Utc>, String)> {
 /// Detailed embed for a single case lookup.
 fn case_embed(case: &ModCase) -> CreateEmbed {
     let mut embed = CreateEmbed::new()
-        .title(format!("Case #{} \u{2022} {}", case.case_number, case.action_type.to_uppercase()))
+        .title(format!(
+            "Case #{} \u{2022} {}",
+            case.case_number,
+            case.action_type.to_uppercase()
+        ))
         .color(colors::BLURPLE)
         .field("Target", format!("<@{}>", case.target_id), true)
         .field("Moderator", format!("<@{}>", case.moderator_id), true)
@@ -815,13 +928,14 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
 
                 let lifted = match action.as_str() {
                     "mute" => {
-                        let role: Option<i64> =
-                            sqlx::query_scalar("SELECT mute_role_id FROM mod_config WHERE guild_id = ?")
-                                .bind(gid)
-                                .fetch_optional(state.servers_db())
-                                .await
-                                .ok()
-                                .flatten();
+                        let role: Option<i64> = sqlx::query_scalar(
+                            "SELECT mute_role_id FROM mod_config WHERE guild_id = ?",
+                        )
+                        .bind(gid)
+                        .fetch_optional(state.servers_db())
+                        .await
+                        .ok()
+                        .flatten();
                         match role {
                             Some(rid) => http
                                 .remove_member_role(

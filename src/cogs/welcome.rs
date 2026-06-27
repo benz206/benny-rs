@@ -251,7 +251,10 @@ impl WelcomeCog {
         let Some(id) = parse_channel_id(arg) else {
             let _ = msg
                 .channel_id
-                .say(&ctx.http, "Please mention a channel or provide a channel ID.")
+                .say(
+                    &ctx.http,
+                    "Please mention a channel or provide a channel ID.",
+                )
                 .await;
             return;
         };
@@ -298,7 +301,10 @@ impl WelcomeCog {
         .execute(self.state.servers_db())
         .await;
         self.reload(guild_id, is_welcome).await;
-        let _ = msg.channel_id.say(&ctx.http, "Message template updated.").await;
+        let _ = msg
+            .channel_id
+            .say(&ctx.http, "Message template updated.")
+            .await;
     }
 
     async fn cmd_embed(
@@ -341,7 +347,10 @@ impl WelcomeCog {
                 self.reload(guild_id, is_welcome).await;
                 let _ = msg
                     .channel_id
-                    .say(&ctx.http, "Custom embed saved. It will be sent on join/leave.")
+                    .say(
+                        &ctx.http,
+                        "Custom embed saved. It will be sent on join/leave.",
+                    )
                     .await;
             }
             _ => {
@@ -385,17 +394,31 @@ impl WelcomeCog {
     fn status_embed(&self, guild_id: u64, is_welcome: bool) -> CreateEmbed {
         let (channel_id, enabled, message, has_embed) = if is_welcome {
             match self.state.welcome_cache.get(&guild_id) {
-                Some(c) => (c.channel_id, c.enabled, c.message.clone(), c.embed_json.is_some()),
+                Some(c) => (
+                    c.channel_id,
+                    c.enabled,
+                    c.message.clone(),
+                    c.embed_json.is_some(),
+                ),
                 None => (None, false, String::new(), false),
             }
         } else {
             match self.state.goodbye_cache.get(&guild_id) {
-                Some(c) => (c.channel_id, c.enabled, c.message.clone(), c.embed_json.is_some()),
+                Some(c) => (
+                    c.channel_id,
+                    c.enabled,
+                    c.message.clone(),
+                    c.embed_json.is_some(),
+                ),
                 None => (None, false, String::new(), false),
             }
         };
 
-        let title = if is_welcome { "Welcome Setup" } else { "Goodbye Setup" };
+        let title = if is_welcome {
+            "Welcome Setup"
+        } else {
+            "Goodbye Setup"
+        };
         let name = if is_welcome { "welcome" } else { "goodbye" };
         let channel_str = channel_id
             .map(|id| format!("<#{id}>"))
@@ -534,7 +557,10 @@ impl WelcomeCog {
                     .bind(guild_id as i64)
                     .execute(self.state.servers_db())
                     .await;
-                let _ = msg.channel_id.say(&ctx.http, "Cleared all autoroles.").await;
+                let _ = msg
+                    .channel_id
+                    .say(&ctx.http, "Cleared all autoroles.")
+                    .await;
             }
             _ => {
                 let _ = msg
@@ -656,7 +682,10 @@ impl WelcomeCog {
             user_mention: mention,
             user_id: user.id.get().to_string(),
             user_avatar: avatar,
-            user_discriminator: user.discriminator.map(|d| d.to_string()).unwrap_or_default(),
+            user_discriminator: user
+                .discriminator
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
             server_name,
             server_id: guild_id.get().to_string(),
             server_member_count: member_count,
@@ -668,7 +697,12 @@ impl WelcomeCog {
 
     // ---- autoroles / sticky roles at join/leave --------------------------
 
-    async fn apply_autoroles(&self, ctx: &Context, guild_id: GuildId, user_id: serenity::all::UserId) {
+    async fn apply_autoroles(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+        user_id: serenity::all::UserId,
+    ) {
         let rows: Vec<(i64,)> =
             sqlx::query_as("SELECT role_id FROM welcome_autoroles WHERE guild_id = ?")
                 .bind(guild_id.get() as i64)
@@ -678,7 +712,12 @@ impl WelcomeCog {
         for (role_id,) in rows {
             let _ = ctx
                 .http
-                .add_member_role(guild_id, user_id, RoleId::new(role_id as u64), Some("Autorole"))
+                .add_member_role(
+                    guild_id,
+                    user_id,
+                    RoleId::new(role_id as u64),
+                    Some("Autorole"),
+                )
                 .await;
         }
     }
@@ -692,15 +731,14 @@ impl WelcomeCog {
         if !self.sticky_enabled(guild_id.get()).await {
             return;
         }
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT role_ids FROM sticky_roles WHERE guild_id = ? AND user_id = ?",
-        )
-        .bind(guild_id.get() as i64)
-        .bind(user_id.get() as i64)
-        .fetch_optional(self.state.servers_db())
-        .await
-        .ok()
-        .flatten();
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT role_ids FROM sticky_roles WHERE guild_id = ? AND user_id = ?")
+                .bind(guild_id.get() as i64)
+                .bind(user_id.get() as i64)
+                .fetch_optional(self.state.servers_db())
+                .await
+                .ok()
+                .flatten();
         let Some((role_ids,)) = row else {
             return;
         };
@@ -767,11 +805,11 @@ impl WelcomeCog {
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT channel_id, message, embed_json, enabled FROM {table} WHERE guild_id = ?"
             )))
-        .bind(guild_id as i64)
-        .fetch_optional(self.state.servers_db())
-        .await
-        .ok()
-        .flatten();
+            .bind(guild_id as i64)
+            .fetch_optional(self.state.servers_db())
+            .await
+            .ok()
+            .flatten();
         let Some((channel_id, message, embed_json, enabled)) = row else {
             return;
         };
@@ -842,7 +880,12 @@ fn split_first(s: &str) -> (&str, &str) {
 }
 
 /// Send rendered content and/or embed; no-op when both are empty.
-async fn send_output(ctx: &Context, channel: ChannelId, content: String, embed: Option<CreateEmbed>) {
+async fn send_output(
+    ctx: &Context,
+    channel: ChannelId,
+    content: String,
+    embed: Option<CreateEmbed>,
+) {
     let has_content = !content.trim().is_empty();
     if !has_content && embed.is_none() {
         return;
@@ -883,7 +926,10 @@ fn render_stored_embed(json_str: &str, ctx: &mut TagContext) -> Option<CreateEmb
     if let Some(fields) = v.get("fields").and_then(|x| x.as_array()) {
         for f in fields {
             let name = f.get("name").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
-            let value = f.get("value").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
+            let value = f
+                .get("value")
+                .and_then(|x| x.as_str())
+                .unwrap_or("\u{200B}");
             let inline = f.get("inline").and_then(|x| x.as_bool()).unwrap_or(false);
             embed = embed.field(render_str(name, ctx), render_str(value, ctx), inline);
         }
@@ -942,7 +988,10 @@ fn json_to_embed(v: &Value) -> CreateEmbed {
     if let Some(fields) = v.get("fields").and_then(|x| x.as_array()) {
         for f in fields {
             let name = f.get("name").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
-            let value = f.get("value").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
+            let value = f
+                .get("value")
+                .and_then(|x| x.as_str())
+                .unwrap_or("\u{200B}");
             let inline = f.get("inline").and_then(|x| x.as_bool()).unwrap_or(false);
             embed = embed.field(name, value, inline);
         }

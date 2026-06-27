@@ -117,7 +117,8 @@ impl Cog for RemindersCog {
 
         match cid {
             "rem:select" => {
-                if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind
+                if let ComponentInteractionDataKind::StringSelect { values } =
+                    &interaction.data.kind
                 {
                     if let Some(ts) = values.first().and_then(|v| v.parse::<i64>().ok()) {
                         if let Some(mut p) = self.pending.get_mut(&msg_id) {
@@ -253,13 +254,22 @@ impl RemindersCog {
 
     async fn on_confirm(&self, ctx: &Context, interaction: &ComponentInteraction, msg_id: u64) {
         let Some(pending) = self.pending.get(&msg_id).map(|p| p.clone()) else {
-            ephemeral_error(ctx, interaction, "This reminder prompt has expired. Run the command again.")
-                .await;
+            ephemeral_error(
+                ctx,
+                interaction,
+                "This reminder prompt has expired. Run the command again.",
+            )
+            .await;
             return;
         };
 
         let Some(ts) = pending.chosen_time else {
-            ephemeral_error(ctx, interaction, "You need to select a time for the reminder.").await;
+            ephemeral_error(
+                ctx,
+                interaction,
+                "You need to select a time for the reminder.",
+            )
+            .await;
             return;
         };
 

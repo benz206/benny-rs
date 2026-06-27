@@ -129,7 +129,8 @@ impl InfoCog {
             .resolve_member_id(ctx, guild_id, arg, msg.author.id.get())
             .await
         else {
-            self.reply_error(ctx, msg, "Could not find that user.").await;
+            self.reply_error(ctx, msg, "Could not find that user.")
+                .await;
             return;
         };
 
@@ -144,7 +145,8 @@ impl InfoCog {
             Err(_) => match UserId::new(target_id).to_user(&ctx.http).await {
                 Ok(user) => {
                     let avatar = user.face();
-                    let badges = badge_names(user.public_flags.unwrap_or_else(UserPublicFlags::empty));
+                    let badges =
+                        badge_names(user.public_flags.unwrap_or_else(UserPublicFlags::empty));
                     let embed = CreateEmbed::new()
                         .author(CreateEmbedAuthor::new(user.tag()).icon_url(&avatar))
                         .title(user.name.clone())
@@ -170,7 +172,8 @@ impl InfoCog {
                     self.reply_embed(ctx, msg, embed).await;
                 }
                 Err(_) => {
-                    self.reply_error(ctx, msg, "Could not find that user.").await;
+                    self.reply_error(ctx, msg, "Could not find that user.")
+                        .await;
                 }
             },
         }
@@ -186,7 +189,8 @@ impl InfoCog {
             match self.build_server_card_http(ctx, guild_id).await {
                 Some(e) => e,
                 None => {
-                    self.reply_error(ctx, msg, "Failed to get server info.").await;
+                    self.reply_error(ctx, msg, "Failed to get server info.")
+                        .await;
                     return;
                 }
             }
@@ -194,8 +198,15 @@ impl InfoCog {
         self.reply_embed(ctx, msg, embed).await;
     }
 
-    async fn build_server_card_http(&self, ctx: &Context, guild_id: GuildId) -> Option<CreateEmbed> {
-        let guild = guild_id.to_partial_guild_with_counts(&ctx.http).await.ok()?;
+    async fn build_server_card_http(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+    ) -> Option<CreateEmbed> {
+        let guild = guild_id
+            .to_partial_guild_with_counts(&ctx.http)
+            .await
+            .ok()?;
         let channels = guild_id.channels(&ctx.http).await.unwrap_or_default();
         let (text, voice, categories) = count_channels(channels.values().map(|c| c.kind));
 
@@ -213,8 +224,16 @@ impl InfoCog {
                 true,
             )
             .field("Roles", guild.roles.len().to_string(), true)
-            .field("Boost Status", boost_status(guild.premium_tier, guild.premium_subscription_count), true)
-            .field("Verification", format!("{:?}", guild.verification_level), true)
+            .field(
+                "Boost Status",
+                boost_status(guild.premium_tier, guild.premium_subscription_count),
+                true,
+            )
+            .field(
+                "Verification",
+                format!("{:?}", guild.verification_level),
+                true,
+            )
             .timestamp(Timestamp::now());
         if let Some(icon) = guild.icon_url() {
             embed = embed.thumbnail(icon);
@@ -225,12 +244,14 @@ impl InfoCog {
     /// `roleinfo <role>` (ri): role card.
     async fn cmd_roleinfo(&self, ctx: &Context, msg: &Message, guild_id: GuildId, arg: &str) {
         if arg.is_empty() {
-            self.reply_error(ctx, msg, "Usage: `roleinfo <@role | id | name>`").await;
+            self.reply_error(ctx, msg, "Usage: `roleinfo <@role | id | name>`")
+                .await;
             return;
         }
         let roles = self.fetch_roles(ctx, guild_id).await;
         let Some(role) = resolve_role(&roles, arg) else {
-            self.reply_error(ctx, msg, "Could not find that role.").await;
+            self.reply_error(ctx, msg, "Could not find that role.")
+                .await;
             return;
         };
 
@@ -276,7 +297,8 @@ impl InfoCog {
             .resolve_member_id(ctx, guild_id, arg, msg.author.id.get())
             .await
         else {
-            self.reply_error(ctx, msg, "Could not find that user.").await;
+            self.reply_error(ctx, msg, "Could not find that user.")
+                .await;
             return;
         };
 
@@ -284,21 +306,22 @@ impl InfoCog {
 
         // Prefer the member (so we get the server avatar + role color), falling
         // back to the global user if they are not in the guild.
-        let (title, avatar, color) =
-            match guild_id.member(&ctx.http, UserId::new(target_id)).await {
-                Ok(member) => (
-                    member.display_name().to_string(),
-                    member.face(),
-                    top_color(&roles, &member.roles),
-                ),
-                Err(_) => match UserId::new(target_id).to_user(&ctx.http).await {
-                    Ok(user) => (user.name.clone(), user.face(), colors::BLURPLE),
-                    Err(_) => {
-                        self.reply_error(ctx, msg, "Could not find that user.").await;
-                        return;
-                    }
-                },
-            };
+        let (title, avatar, color) = match guild_id.member(&ctx.http, UserId::new(target_id)).await
+        {
+            Ok(member) => (
+                member.display_name().to_string(),
+                member.face(),
+                top_color(&roles, &member.roles),
+            ),
+            Err(_) => match UserId::new(target_id).to_user(&ctx.http).await {
+                Ok(user) => (user.name.clone(), user.face(), colors::BLURPLE),
+                Err(_) => {
+                    self.reply_error(ctx, msg, "Could not find that user.")
+                        .await;
+                    return;
+                }
+            },
+        };
 
         let embed = CreateEmbed::new()
             .title(title)
@@ -330,11 +353,7 @@ fn fmt_ts(t: Timestamp) -> String {
 }
 
 fn yes_no(b: bool) -> &'static str {
-    if b {
-        "Yes"
-    } else {
-        "No"
-    }
+    if b { "Yes" } else { "No" }
 }
 
 /// Highest-positioned role color the member has, ignoring uncolored roles.
@@ -364,7 +383,10 @@ fn badge_names(flags: UserPublicFlags) -> Vec<&'static str> {
         (F::SYSTEM, "System"),
         (F::BUG_HUNTER_LEVEL_2, "Bug Hunter Level 2"),
         (F::VERIFIED_BOT, "Verified Bot"),
-        (F::EARLY_VERIFIED_BOT_DEVELOPER, "Early Verified Bot Developer"),
+        (
+            F::EARLY_VERIFIED_BOT_DEVELOPER,
+            "Early Verified Bot Developer",
+        ),
         (F::DISCORD_CERTIFIED_MODERATOR, "Certified Moderator"),
         (F::ACTIVE_DEVELOPER, "Active Developer"),
     ]
@@ -467,7 +489,11 @@ fn build_server_card_cached(guild: &Guild) -> CreateEmbed {
             boost_status(guild.premium_tier, guild.premium_subscription_count),
             true,
         )
-        .field("Verification", format!("{:?}", guild.verification_level), true)
+        .field(
+            "Verification",
+            format!("{:?}", guild.verification_level),
+            true,
+        )
         .timestamp(Timestamp::now());
     if let Some(icon) = guild.icon_url() {
         embed = embed.thumbnail(icon);

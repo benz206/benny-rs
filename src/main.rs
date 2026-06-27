@@ -1,27 +1,27 @@
 use anyhow::Result;
 use serenity::all::{
-    ChannelId, Client, Context, EventHandler, GatewayIntents,
-    Guild, GuildChannel, GuildId, Interaction, Member, Message, MessageId,
-    Reaction, Ready, Role, RoleId, UnavailableGuild, User, VoiceState,
+    ChannelId, Client, Context, EventHandler, GatewayIntents, Guild, GuildChannel, GuildId,
+    Interaction, Member, Message, MessageId, Reaction, Ready, Role, RoleId, UnavailableGuild, User,
+    VoiceState,
 };
 use serenity::model::event::{GuildMemberUpdateEvent, MessageUpdateEvent, VoiceServerUpdateEvent};
 use std::sync::Arc;
 use tracing::{error, info};
 
+mod cogs;
 mod config;
 mod db;
 mod db_mongo;
 mod error;
-mod state;
 mod http;
-mod cogs;
 mod slash;
+mod state;
 mod tagscript;
 mod tasks;
 mod utils;
 
 use config::load_config;
-use state::{start_latency_task, AppState};
+use state::{AppState, start_latency_task};
 
 fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     use tracing_subscriber::prelude::*;
@@ -122,28 +122,11 @@ async fn main() -> Result<()> {
         | GatewayIntents::DIRECT_MESSAGES;
 
     use cogs::{
-        afk::AfkCog,
-        base::BaseCog,
-        dev::DevCog,
-        dictionary::DictionaryCog,
-        embed::EmbedCog,
-        help::HelpCog,
-        info::InfoCog,
-        logging::LoggingCog,
-        events::EventsCog,
-        moderation::ModerationCog,
-        music::MusicCog,
-        ocr::OcrCog,
-        prefixes::PrefixesCog,
-        premium::PremiumCog,
-        reminders::RemindersCog,
-        roles::RolesCog,
-        sentinel::SentinelCog,
-        settings::SettingsCog,
-        tags::TagsCog,
-        translate::TranslateCog,
-        welcome::WelcomeCog,
-        CogManager,
+        CogManager, afk::AfkCog, base::BaseCog, dev::DevCog, dictionary::DictionaryCog,
+        embed::EmbedCog, events::EventsCog, help::HelpCog, info::InfoCog, logging::LoggingCog,
+        moderation::ModerationCog, music::MusicCog, ocr::OcrCog, prefixes::PrefixesCog,
+        premium::PremiumCog, reminders::RemindersCog, roles::RolesCog, sentinel::SentinelCog,
+        settings::SettingsCog, tags::TagsCog, translate::TranslateCog, welcome::WelcomeCog,
     };
 
     struct Handler {
@@ -171,13 +154,18 @@ async fn main() -> Result<()> {
             }
 
             // Spawn reminder background task exactly once
-            if !self.reminder_task_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            if !self
+                .reminder_task_started
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
                 tasks::reminders::spawn_reminder_task(self.state.clone(), ctx.http.clone());
             }
         }
 
         async fn message(&self, ctx: Context, msg: Message) {
-            if msg.author.bot { return; }
+            if msg.author.bot {
+                return;
+            }
             self.cogs.dispatch_message(&ctx, &msg).await;
         }
 
@@ -185,16 +173,38 @@ async fn main() -> Result<()> {
             self.cogs.dispatch_member_join(&ctx, &member).await;
         }
 
-        async fn guild_member_removal(&self, ctx: Context, guild_id: GuildId, user: User, _member: Option<Member>) {
+        async fn guild_member_removal(
+            &self,
+            ctx: Context,
+            guild_id: GuildId,
+            user: User,
+            _member: Option<Member>,
+        ) {
             self.cogs.dispatch_member_leave(&ctx, guild_id, &user).await;
         }
 
-        async fn message_update(&self, ctx: Context, old: Option<Message>, new: Option<Message>, event: MessageUpdateEvent) {
-            self.cogs.dispatch_message_update(&ctx, old, new, &event).await;
+        async fn message_update(
+            &self,
+            ctx: Context,
+            old: Option<Message>,
+            new: Option<Message>,
+            event: MessageUpdateEvent,
+        ) {
+            self.cogs
+                .dispatch_message_update(&ctx, old, new, &event)
+                .await;
         }
 
-        async fn message_delete(&self, ctx: Context, channel_id: ChannelId, msg_id: MessageId, guild_id: Option<GuildId>) {
-            self.cogs.dispatch_message_delete(&ctx, channel_id, msg_id, guild_id).await;
+        async fn message_delete(
+            &self,
+            ctx: Context,
+            channel_id: ChannelId,
+            msg_id: MessageId,
+            guild_id: Option<GuildId>,
+        ) {
+            self.cogs
+                .dispatch_message_delete(&ctx, channel_id, msg_id, guild_id)
+                .await;
         }
 
         async fn reaction_add(&self, ctx: Context, reaction: Reaction) {
@@ -205,27 +215,51 @@ async fn main() -> Result<()> {
             self.cogs.dispatch_guild_create(&ctx, &guild).await;
         }
 
-        async fn guild_delete(&self, ctx: Context, incomplete: UnavailableGuild, full: Option<Guild>) {
-            self.cogs.dispatch_guild_delete(&ctx, incomplete, full).await;
+        async fn guild_delete(
+            &self,
+            ctx: Context,
+            incomplete: UnavailableGuild,
+            full: Option<Guild>,
+        ) {
+            self.cogs
+                .dispatch_guild_delete(&ctx, incomplete, full)
+                .await;
         }
 
-        async fn guild_member_update(&self, ctx: Context, old: Option<Member>, new: Option<Member>, event: GuildMemberUpdateEvent) {
-            self.cogs.dispatch_member_update(&ctx, old, new, &event).await;
+        async fn guild_member_update(
+            &self,
+            ctx: Context,
+            old: Option<Member>,
+            new: Option<Member>,
+            event: GuildMemberUpdateEvent,
+        ) {
+            self.cogs
+                .dispatch_member_update(&ctx, old, new, &event)
+                .await;
         }
 
         async fn guild_ban_addition(&self, ctx: Context, guild_id: GuildId, banned_user: User) {
-            self.cogs.dispatch_member_ban(&ctx, guild_id, &banned_user).await;
+            self.cogs
+                .dispatch_member_ban(&ctx, guild_id, &banned_user)
+                .await;
         }
 
         async fn guild_ban_removal(&self, ctx: Context, guild_id: GuildId, unbanned_user: User) {
-            self.cogs.dispatch_member_unban(&ctx, guild_id, &unbanned_user).await;
+            self.cogs
+                .dispatch_member_unban(&ctx, guild_id, &unbanned_user)
+                .await;
         }
 
         async fn channel_create(&self, ctx: Context, channel: GuildChannel) {
             self.cogs.dispatch_channel_create(&ctx, &channel).await;
         }
 
-        async fn channel_delete(&self, ctx: Context, channel: GuildChannel, _messages: Option<Vec<Message>>) {
+        async fn channel_delete(
+            &self,
+            ctx: Context,
+            channel: GuildChannel,
+            _messages: Option<Vec<Message>>,
+        ) {
             self.cogs.dispatch_channel_delete(&ctx, &channel).await;
         }
 
@@ -233,8 +267,16 @@ async fn main() -> Result<()> {
             self.cogs.dispatch_role_create(&ctx, &new).await;
         }
 
-        async fn guild_role_delete(&self, ctx: Context, guild_id: GuildId, removed_role_id: RoleId, removed_role_data: Option<Role>) {
-            self.cogs.dispatch_role_delete(&ctx, guild_id, removed_role_id, removed_role_data).await;
+        async fn guild_role_delete(
+            &self,
+            ctx: Context,
+            guild_id: GuildId,
+            removed_role_id: RoleId,
+            removed_role_data: Option<Role>,
+        ) {
+            self.cogs
+                .dispatch_role_delete(&ctx, guild_id, removed_role_id, removed_role_data)
+                .await;
         }
 
         async fn thread_create(&self, ctx: Context, thread: GuildChannel) {

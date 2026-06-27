@@ -281,7 +281,8 @@ impl Cog for LoggingCog {
             }
         }
 
-        self.log_event(guild_id, "Message Deleted", C_RED, fields).await;
+        self.log_event(guild_id, "Message Deleted", C_RED, fields)
+            .await;
     }
 
     async fn on_member_join(&self, _ctx: &Context, member: &Member) {

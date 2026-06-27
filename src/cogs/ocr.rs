@@ -21,9 +21,11 @@ impl OcrCog {
             }
         }
         let name = att.filename.to_lowercase();
-        [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"]
-            .iter()
-            .any(|ext| name.ends_with(ext))
+        [
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+        ]
+        .iter()
+        .any(|ext| name.ends_with(ext))
     }
 
     /// Upload text to mystb.in, returning the paste link on success.

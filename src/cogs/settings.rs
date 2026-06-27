@@ -39,7 +39,10 @@ impl SettingsCog {
             return false;
         }
         let upper = tz.to_ascii_uppercase();
-        if matches!(upper.as_str(), "UTC" | "GMT" | "LOCAL" | "ZULU" | "UNIVERSAL") {
+        if matches!(
+            upper.as_str(),
+            "UTC" | "GMT" | "LOCAL" | "ZULU" | "UNIVERSAL"
+        ) {
             return true;
         }
         // Otherwise require an Area/Location form: at least two non-empty
@@ -400,10 +403,11 @@ impl SettingsCog {
                     .await;
             }
             "remove" => {
-                let _ = sqlx::query("UPDATE settings_users SET is_blacklisted = 0 WHERE user_id = ?")
-                    .bind(user_id)
-                    .execute(self.state.users_db())
-                    .await;
+                let _ =
+                    sqlx::query("UPDATE settings_users SET is_blacklisted = 0 WHERE user_id = ?")
+                        .bind(user_id)
+                        .execute(self.state.users_db())
+                        .await;
                 let _ = msg
                     .channel_id
                     .say(&ctx.http, format!("<@{user_id}> removed from blacklist."))

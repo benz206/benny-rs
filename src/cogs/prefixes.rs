@@ -2,7 +2,9 @@ use super::Cog;
 use crate::state::AppState;
 use crate::utils::{colors, embeds};
 use async_trait::async_trait;
-use serenity::all::{Context, CreateEmbed, CreateMessage, Guild, Message, Timestamp, UnavailableGuild};
+use serenity::all::{
+    Context, CreateEmbed, CreateMessage, Guild, Message, Timestamp, UnavailableGuild,
+};
 use std::sync::Arc;
 
 /// Maximum number of custom prefixes a guild may have.
@@ -52,13 +54,12 @@ impl PrefixesCog {
         if let Some(entry) = self.state.prefix_cache.get(&guild_id) {
             return entry.clone();
         }
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT prefix FROM settings_prefixes WHERE guild_id = ?",
-        )
-        .bind(guild_id as i64)
-        .fetch_all(self.state.servers_db())
-        .await
-        .unwrap_or_default();
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT prefix FROM settings_prefixes WHERE guild_id = ?")
+                .bind(guild_id as i64)
+                .fetch_all(self.state.servers_db())
+                .await
+                .unwrap_or_default();
         let mut prefixes: Vec<String> = rows.into_iter().map(|(p,)| p).collect();
         prefixes.sort_by_key(|p| p.len());
         prefixes
@@ -116,7 +117,12 @@ impl Cog for PrefixesCog {
     }
 
     /// On leaving a guild, remove its prefixes from the DB and cache.
-    async fn on_guild_delete(&self, _ctx: &Context, incomplete: UnavailableGuild, _full: Option<Guild>) {
+    async fn on_guild_delete(
+        &self,
+        _ctx: &Context,
+        incomplete: UnavailableGuild,
+        _full: Option<Guild>,
+    ) {
         let guild_id = incomplete.id.get();
         let _ = sqlx::query("DELETE FROM settings_prefixes WHERE guild_id = ?")
             .bind(guild_id as i64)
@@ -227,17 +233,17 @@ impl PrefixesCog {
             return;
         }
 
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO settings_prefixes (guild_id, prefix) VALUES (?, ?)",
-        )
-        .bind(guild_id as i64)
-        .bind(&clean)
-        .execute(self.state.servers_db())
-        .await;
+        let result =
+            sqlx::query("INSERT OR IGNORE INTO settings_prefixes (guild_id, prefix) VALUES (?, ?)")
+                .bind(guild_id as i64)
+                .bind(&clean)
+                .execute(self.state.servers_db())
+                .await;
 
         if let Err(e) = result {
             tracing::error!(error = ?e, "failed to add prefix");
-            self.send_embed(ctx, msg, embeds::error_embed("Database error.")).await;
+            self.send_embed(ctx, msg, embeds::error_embed("Database error."))
+                .await;
             return;
         }
 
@@ -248,7 +254,10 @@ impl PrefixesCog {
         self.send_embed(
             ctx,
             msg,
-            embeds::success_embed("Success", &format!("Successfully added `{clean}` to your server")),
+            embeds::success_embed(
+                "Success",
+                &format!("Successfully added `{clean}` to your server"),
+            ),
         )
         .await;
     }
@@ -283,17 +292,16 @@ impl PrefixesCog {
             return;
         }
 
-        let result = sqlx::query(
-            "DELETE FROM settings_prefixes WHERE guild_id = ? AND prefix = ?",
-        )
-        .bind(guild_id as i64)
-        .bind(&clean)
-        .execute(self.state.servers_db())
-        .await;
+        let result = sqlx::query("DELETE FROM settings_prefixes WHERE guild_id = ? AND prefix = ?")
+            .bind(guild_id as i64)
+            .bind(&clean)
+            .execute(self.state.servers_db())
+            .await;
 
         if let Err(e) = result {
             tracing::error!(error = ?e, "failed to remove prefix");
-            self.send_embed(ctx, msg, embeds::error_embed("Database error.")).await;
+            self.send_embed(ctx, msg, embeds::error_embed("Database error."))
+                .await;
             return;
         }
 

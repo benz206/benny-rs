@@ -128,9 +128,7 @@ impl BaseCog {
             .color(color)
             .footer(CreateEmbedFooter::new(PING_NOTE))
             .timestamp(Timestamp::now());
-        let _ = sent
-            .edit(&ctx.http, EditMessage::new().embed(result))
-            .await;
+        let _ = sent.edit(&ctx.http, EditMessage::new().embed(result)).await;
     }
 
     // ---- about ------------------------------------------------------------
@@ -438,12 +436,7 @@ fn compute_file_stats() -> FileStats {
 /// unavailable or the directory is not a repository.
 fn latest_commits(count: usize) -> Option<(String, String)> {
     let output = std::process::Command::new("git")
-        .args([
-            "log",
-            "-n",
-            &count.to_string(),
-            "--format=%H\x1f%s\x1f%ct",
-        ])
+        .args(["log", "-n", &count.to_string(), "--format=%H\x1f%s\x1f%ct"])
         .output()
         .ok()?;
     if !output.status.success() {

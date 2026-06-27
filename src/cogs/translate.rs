@@ -61,16 +61,13 @@ impl TranslateCog {
 
         // Response format: [[["translated","original",...],...],null,"detected_lang",...]
         let json: serde_json::Value = response.json().await.ok()?;
-        let translated = json
-            .get(0)
-            .and_then(|arr| arr.as_array())
-            .map(|chunks| {
-                chunks
-                    .iter()
-                    .filter_map(|chunk| chunk.get(0).and_then(|v| v.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("")
-            })?;
+        let translated = json.get(0).and_then(|arr| arr.as_array()).map(|chunks| {
+            chunks
+                .iter()
+                .filter_map(|chunk| chunk.get(0).and_then(|v| v.as_str()))
+                .collect::<Vec<_>>()
+                .join("")
+        })?;
         let detected = json
             .get(2)
             .and_then(|v| v.as_str())

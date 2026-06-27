@@ -16,7 +16,8 @@ pub fn process_block(
     // Loose variable assignment: {$name:value}
     if let Some(var) = name.strip_prefix('$') {
         if !var.is_empty() {
-            ctx.vars.insert(var.to_string(), payload.unwrap_or("").to_string());
+            ctx.vars
+                .insert(var.to_string(), payload.unwrap_or("").to_string());
         }
         return String::new();
     }
@@ -27,7 +28,8 @@ pub fn process_block(
         "=" | "let" | "var" => {
             if let Some(var) = parameter {
                 if !var.is_empty() {
-                    ctx.vars.insert(var.to_string(), payload.unwrap_or("").to_string());
+                    ctx.vars
+                        .insert(var.to_string(), payload.unwrap_or("").to_string());
                 }
             }
             String::new()
@@ -178,8 +180,8 @@ pub fn process_block(
         "debug" => String::new(),
 
         // ---- SECURITY: omitted (never execute arbitrary code/commands) ---
-        "python" | "py" | "command" | "c" | "com" | "require" | "whitelist"
-        | "blacklist" | "override" | "bypass" => String::new(),
+        "python" | "py" | "command" | "c" | "com" | "require" | "whitelist" | "blacklist"
+        | "override" | "bypass" => String::new(),
 
         // ---- Variables & unknown blocks ----------------------------------
         _ => {
@@ -370,14 +372,25 @@ fn range_block(parameter: Option<&str>, payload: &str, floaty: bool) -> String {
     let mut seed: Option<&str> = None;
     let (min, max): (f64, f64) = if let Some(p) = parameter.filter(|p| p.contains(',')) {
         let (a, b) = p.split_once(',').unwrap();
-        (a.trim().parse().unwrap_or(0.0), b.trim().parse().unwrap_or(0.0))
+        (
+            a.trim().parse().unwrap_or(0.0),
+            b.trim().parse().unwrap_or(0.0),
+        )
     } else {
         seed = parameter.filter(|s| !s.is_empty());
         let p = payload.trim();
         // `min-max` (allow a leading negative min).
-        if let Some(idx) = p.char_indices().skip(1).find(|&(_, c)| c == '-').map(|(i, _)| i) {
+        if let Some(idx) = p
+            .char_indices()
+            .skip(1)
+            .find(|&(_, c)| c == '-')
+            .map(|(i, _)| i)
+        {
             let (a, b) = p.split_at(idx);
-            (a.trim().parse().unwrap_or(0.0), b[1..].trim().parse().unwrap_or(0.0))
+            (
+                a.trim().parse().unwrap_or(0.0),
+                b[1..].trim().parse().unwrap_or(0.0),
+            )
         } else {
             (0.0, p.parse().unwrap_or(0.0))
         }
@@ -587,11 +600,7 @@ fn comma_format(n: i64) -> String {
         }
         out.push(c);
     }
-    if neg {
-        format!("-{}", out)
-    } else {
-        out
-    }
+    if neg { format!("-{}", out) } else { out }
 }
 
 fn length_block(parameter: Option<&str>, payload: &str) -> String {
@@ -775,10 +784,7 @@ fn embed_block(parameter: Option<&str>, payload: Option<&str>, output: &mut TagO
             }
         }
         "thumbnail" => {
-            map.insert(
-                "thumbnail".into(),
-                serde_json::json!({ "url": value }),
-            );
+            map.insert("thumbnail".into(), serde_json::json!({ "url": value }));
         }
         "image" => {
             map.insert("image".into(), serde_json::json!({ "url": value }));
@@ -826,7 +832,11 @@ fn merge_embed_json(text: &str, output: &mut TagOutput) {
     };
     let map = embed_object(output);
     for (k, v) in obj {
-        let key = if k == "colour" { "color".to_string() } else { k };
+        let key = if k == "colour" {
+            "color".to_string()
+        } else {
+            k
+        };
         map.insert(key, v);
     }
 }
@@ -834,7 +844,10 @@ fn merge_embed_json(text: &str, output: &mut TagOutput) {
 /// Parse `#rrggbb`, `0xrrggbb`, a decimal int, or a basic color name -> int.
 fn parse_color(value: &str) -> Option<i64> {
     let v = value.trim();
-    let hex = v.strip_prefix('#').or_else(|| v.strip_prefix("0x")).map(|s| s.to_string());
+    let hex = v
+        .strip_prefix('#')
+        .or_else(|| v.strip_prefix("0x"))
+        .map(|s| s.to_string());
     if let Some(h) = hex {
         return i64::from_str_radix(h.trim(), 16).ok();
     }

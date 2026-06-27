@@ -170,7 +170,12 @@ impl Cog for EventsCog {
         }
     }
 
-    async fn on_guild_delete(&self, _ctx: &Context, incomplete: UnavailableGuild, full: Option<Guild>) {
+    async fn on_guild_delete(
+        &self,
+        _ctx: &Context,
+        incomplete: UnavailableGuild,
+        full: Option<Guild>,
+    ) {
         // A guild going *unavailable* (outage) is not a real removal; ignore it
         // so reconnections don't masquerade as leaves.
         if incomplete.unavailable {

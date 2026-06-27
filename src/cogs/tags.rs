@@ -152,7 +152,10 @@ impl TagsCog {
             channel_id: msg.channel_id.get().to_string(),
             channel_mention: format!("<#{}>", msg.channel_id.get()),
             server_name,
-            server_id: msg.guild_id.map(|g| g.get().to_string()).unwrap_or_default(),
+            server_id: msg
+                .guild_id
+                .map(|g| g.get().to_string())
+                .unwrap_or_default(),
             server_member_count,
             server_icon,
             args: args.to_string(),
@@ -489,8 +492,10 @@ impl TagsCog {
             }
         }
 
-        let embed =
-            embeds::success_embed("Success", &format!("Edited tag `{name}`, new length `{len}`"));
+        let embed = embeds::success_embed(
+            "Success",
+            &format!("Edited tag `{name}`, new length `{len}`"),
+        );
         let _ = msg
             .channel_id
             .send_message(&ctx.http, CreateMessage::new().embed(embed))
@@ -602,7 +607,10 @@ impl TagsCog {
     async fn cmd_info(&self, ctx: &Context, msg: &Message, guild_id: u64, name: &str) {
         let name = name.trim().to_lowercase();
         if name.is_empty() {
-            let _ = msg.channel_id.say(&ctx.http, "Usage: tag info <name>").await;
+            let _ = msg
+                .channel_id
+                .say(&ctx.http, "Usage: tag info <name>")
+                .await;
             return;
         }
 
@@ -689,7 +697,10 @@ fn json_to_embed(v: &serde_json::Value) -> CreateEmbed {
     if let Some(fields) = v.get("fields").and_then(|x| x.as_array()) {
         for f in fields {
             let name = f.get("name").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
-            let value = f.get("value").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
+            let value = f
+                .get("value")
+                .and_then(|x| x.as_str())
+                .unwrap_or("\u{200B}");
             let inline = f.get("inline").and_then(|x| x.as_bool()).unwrap_or(false);
             embed = embed.field(name, value, inline);
         }

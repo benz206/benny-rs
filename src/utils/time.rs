@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use interim::{parse_date_string, Dialect};
+use interim::{Dialect, parse_date_string};
 
 /// Parse a human time expression into an absolute UTC timestamp, relative to
 /// `now`. Handles natural-language input ("tomorrow", "in 5 hours",

@@ -1,5 +1,5 @@
-use serenity::all::{CreateEmbed, Timestamp};
 use super::colors;
+use serenity::all::{CreateEmbed, Timestamp};
 
 pub fn success_embed(title: &str, description: &str) -> CreateEmbed {
     CreateEmbed::new()

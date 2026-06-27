@@ -1,6 +1,6 @@
-mod lexer;
 mod blocks;
 pub mod context;
+mod lexer;
 
 pub use context::TagContext;
 

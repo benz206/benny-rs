@@ -1,10 +1,10 @@
-use serenity::futures::TryStreamExt;
 use mongodb::{
-    bson::{doc, Document},
-    options::ReturnDocument,
     Client as MongoClient,
+    bson::{Document, doc},
+    options::ReturnDocument,
 };
 use serde::{Deserialize, Serialize};
+use serenity::futures::TryStreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModCase {
@@ -43,9 +43,7 @@ pub async fn next_case_number(client: &MongoClient, guild_id: i64) -> mongodb::e
         .return_document(ReturnDocument::After)
         .await?;
 
-    let count = doc
-        .and_then(|d| d.get_i64("case_count").ok())
-        .unwrap_or(1);
+    let count = doc.and_then(|d| d.get_i64("case_count").ok()).unwrap_or(1);
     Ok(count)
 }
 

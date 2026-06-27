@@ -107,7 +107,8 @@ impl PremiumCog {
 
     /// `premium` / `premium info` — show the invoker's tier and perks.
     async fn cmd_info(&self, ctx: &Context, msg: &Message) {
-        let level = PremiumLevel::from_level(self.user_premium_level(msg.author.id.get()).await as i64);
+        let level =
+            PremiumLevel::from_level(self.user_premium_level(msg.author.id.get()).await as i64);
         let embed = CreateEmbed::new()
             .title(format!("{ICON} Premium Status"))
             .description(format!(
@@ -124,7 +125,8 @@ impl PremiumCog {
     async fn cmd_activate(&self, ctx: &Context, msg: &Message, token: &str) {
         let token = token.trim();
         if token.is_empty() {
-            self.reply_error(ctx, msg, "Usage: `premium activate <token>`").await;
+            self.reply_error(ctx, msg, "Usage: `premium activate <token>`")
+                .await;
             return;
         }
 
@@ -141,23 +143,24 @@ impl PremiumCog {
             return;
         };
         if redeemed != 0 {
-            self.reply_error(ctx, msg, "That token has already been redeemed.").await;
+            self.reply_error(ctx, msg, "That token has already been redeemed.")
+                .await;
             return;
         }
 
         let user_id = msg.author.id.get() as i64;
 
         // Burn the token, recording the redeemer as its owner.
-        if let Err(e) = sqlx::query(
-            "UPDATE premium_tokens SET redeemed = 1, owner_id = ? WHERE token = ?",
-        )
-        .bind(user_id)
-        .bind(token)
-        .execute(self.state.users_db())
-        .await
+        if let Err(e) =
+            sqlx::query("UPDATE premium_tokens SET redeemed = 1, owner_id = ? WHERE token = ?")
+                .bind(user_id)
+                .bind(token)
+                .execute(self.state.users_db())
+                .await
         {
             tracing::error!(error = ?e, "failed to redeem premium token");
-            self.reply_error(ctx, msg, "Failed to redeem that token. Try again later.").await;
+            self.reply_error(ctx, msg, "Failed to redeem that token. Try again later.")
+                .await;
             return;
         }
 
@@ -187,7 +190,8 @@ impl PremiumCog {
     /// `premium generate [level]` — OWNER ONLY. Mint a token and DM it.
     async fn cmd_generate(&self, ctx: &Context, msg: &Message, arg: &str) {
         if !self.state.is_owner(msg.author.id.get()) {
-            self.reply_error(ctx, msg, "This command is owner-only.").await;
+            self.reply_error(ctx, msg, "This command is owner-only.")
+                .await;
             return;
         }
 
@@ -199,12 +203,8 @@ impl PremiumCog {
             match arg.parse::<i64>() {
                 Ok(n) if (1..=3).contains(&n) => n,
                 _ => {
-                    self.reply_error(
-                        ctx,
-                        msg,
-                        "Level must be 1 (Basic), 2 (Pro), or 3 (Max).",
-                    )
-                    .await;
+                    self.reply_error(ctx, msg, "Level must be 1 (Basic), 2 (Pro), or 3 (Max).")
+                        .await;
                     return;
                 }
             }
@@ -220,7 +220,8 @@ impl PremiumCog {
         .await
         {
             tracing::error!(error = ?e, "failed to insert premium token");
-            self.reply_error(ctx, msg, "Failed to generate token.").await;
+            self.reply_error(ctx, msg, "Failed to generate token.")
+                .await;
             return;
         }
 
@@ -264,7 +265,8 @@ impl PremiumCog {
     /// `premium tokens` — OWNER ONLY. List outstanding & redeemed tokens.
     async fn cmd_tokens(&self, ctx: &Context, msg: &Message) {
         if !self.state.is_owner(msg.author.id.get()) {
-            self.reply_error(ctx, msg, "This command is owner-only.").await;
+            self.reply_error(ctx, msg, "This command is owner-only.")
+                .await;
             return;
         }
 
@@ -276,7 +278,8 @@ impl PremiumCog {
         .unwrap_or_default();
 
         if rows.is_empty() {
-            self.reply_error(ctx, msg, "No premium tokens have been generated yet.").await;
+            self.reply_error(ctx, msg, "No premium tokens have been generated yet.")
+                .await;
             return;
         }
 

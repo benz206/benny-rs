@@ -4,14 +4,14 @@ use crate::utils::format::truncate;
 use crate::utils::{colors, embeds, parse};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serenity::all::{
     ActionRowComponent, ButtonStyle, ChannelId, ChannelType, Colour, ComponentInteraction,
     ComponentInteractionDataKind, Context, CreateActionRow, CreateAttachment, CreateButton,
     CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage, CreateModal,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, InputTextStyle, Message,
-    ModalInteraction, Timestamp,
+    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
+    CreateModal, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, InputTextStyle,
+    Message, ModalInteraction, Timestamp,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -161,12 +161,23 @@ impl EmbedData {
         for f in &self.fields {
             // Discord rejects fields with an empty name or value; substitute a
             // zero-width space so imported/edited embeds always render.
-            let name = if f.name.trim().is_empty() { "\u{200b}" } else { truncate(&f.name, 256) };
-            let value = if f.value.trim().is_empty() { "\u{200b}" } else { truncate(&f.value, 1024) };
+            let name = if f.name.trim().is_empty() {
+                "\u{200b}"
+            } else {
+                truncate(&f.name, 256)
+            };
+            let value = if f.value.trim().is_empty() {
+                "\u{200b}"
+            } else {
+                truncate(&f.value, 1024)
+            };
             e = e.field(name, value, f.inline);
             empty = false;
         }
-        if let Some(t) = self.timestamp.and_then(|ts| Timestamp::from_unix_timestamp(ts).ok()) {
+        if let Some(t) = self
+            .timestamp
+            .and_then(|ts| Timestamp::from_unix_timestamp(ts).ok())
+        {
             e = e.timestamp(t);
         }
         if empty {
@@ -190,7 +201,10 @@ impl EmbedData {
         if let Some(c) = self.color {
             map.insert("color".into(), json!(c));
         }
-        if let Some(t) = self.timestamp.and_then(|ts| Timestamp::from_unix_timestamp(ts).ok()) {
+        if let Some(t) = self
+            .timestamp
+            .and_then(|ts| Timestamp::from_unix_timestamp(ts).ok())
+        {
             map.insert("timestamp".into(), json!(t.to_string()));
         }
         if let Some(name) = &self.author_name {
@@ -330,7 +344,10 @@ impl Cog for EmbedCog {
                 if arg.is_empty() {
                     let _ = msg
                         .channel_id
-                        .say(&ctx.http, "Usage: `embed import <json | https://mystb.in/...>`")
+                        .say(
+                            &ctx.http,
+                            "Usage: `embed import <json | https://mystb.in/...>`",
+                        )
                         .await;
                     return;
                 }
@@ -339,7 +356,10 @@ impl Cog for EmbedCog {
                     Err(e) => {
                         let _ = msg
                             .channel_id
-                            .send_message(&ctx.http, CreateMessage::new().embed(embeds::error_embed(&e)))
+                            .send_message(
+                                &ctx.http,
+                                CreateMessage::new().embed(embeds::error_embed(&e)),
+                            )
                             .await;
                     }
                 }
@@ -380,8 +400,12 @@ impl Cog for EmbedCog {
         let owner = match self.builders.get(&msg_id) {
             Some(b) => b.owner_id,
             None => {
-                self.ephemeral(ctx, interaction, embeds::error_embed("This embed builder has expired."))
-                    .await;
+                self.ephemeral(
+                    ctx,
+                    interaction,
+                    embeds::error_embed("This embed builder has expired."),
+                )
+                .await;
                 return;
             }
         };
@@ -398,7 +422,11 @@ impl Cog for EmbedCog {
         match cid {
             // Buttons that open a pre-filled modal.
             BTN_AUTHOR | BTN_BASE | BTN_IMAGES | BTN_FOOTER => {
-                let data = self.builders.get(&msg_id).map(|b| b.data.clone()).unwrap_or_default();
+                let data = self
+                    .builders
+                    .get(&msg_id)
+                    .map(|b| b.data.clone())
+                    .unwrap_or_default();
                 let modal = match cid {
                     BTN_AUTHOR => build_author_modal(&data),
                     BTN_BASE => build_base_modal(&data),
@@ -424,13 +452,19 @@ impl Cog for EmbedCog {
                     .await;
                 } else {
                     let _ = interaction
-                        .create_response(&ctx.http, CreateInteractionResponse::Modal(build_addfield_modal()))
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Modal(build_addfield_modal()),
+                        )
                         .await;
                 }
             }
             BTN_IMPORT => {
                 let _ = interaction
-                    .create_response(&ctx.http, CreateInteractionResponse::Modal(build_import_modal()))
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::Modal(build_import_modal()),
+                    )
                     .await;
             }
             // Switch to the "remove a field" sub-view.
@@ -459,7 +493,8 @@ impl Cog for EmbedCog {
                     .get(&msg_id)
                     .map(|b| b.data.to_create_embed())
                     .unwrap_or_default();
-                self.update(ctx, interaction, embed, build_send_components()).await;
+                self.update(ctx, interaction, embed, build_send_components())
+                    .await;
             }
             // Back to the main builder view.
             BTN_BACK => {
@@ -493,7 +528,9 @@ impl Cog for EmbedCog {
             // A channel was chosen to send to.
             SEL_SEND => {
                 let channel = match &interaction.data.kind {
-                    ComponentInteractionDataKind::ChannelSelect { values } => values.first().copied(),
+                    ComponentInteractionDataKind::ChannelSelect { values } => {
+                        values.first().copied()
+                    }
                     _ => None,
                 };
                 let (embed, components, preview) = {
@@ -565,7 +602,9 @@ impl Cog for EmbedCog {
                         .embed(embeds::success_embed("Exported to Mystbin", &link))
                         .ephemeral(true),
                     None => CreateInteractionResponseFollowup::new()
-                        .embed(embeds::error_embed("Failed to upload to Mystbin. Try again later."))
+                        .embed(embeds::error_embed(
+                            "Failed to upload to Mystbin. Try again later.",
+                        ))
                         .ephemeral(true),
                 };
                 let _ = interaction.create_followup(&ctx.http, followup).await;
@@ -691,7 +730,10 @@ impl Cog for EmbedCog {
                 }
                 MODAL_IMAGES => {
                     d.image_url = inputs.get("image_url").map(|s| s.as_str()).and_then(opt);
-                    d.thumbnail_url = inputs.get("thumbnail_url").map(|s| s.as_str()).and_then(opt);
+                    d.thumbnail_url = inputs
+                        .get("thumbnail_url")
+                        .map(|s| s.as_str())
+                        .and_then(opt);
                 }
                 MODAL_FOOTER => {
                     d.footer_text = inputs.get("text").map(|s| s.as_str()).and_then(opt);
@@ -702,12 +744,22 @@ impl Cog for EmbedCog {
                     let value = inputs.get("field_value").map(|s| s.trim()).unwrap_or("");
                     let inline = inputs
                         .get("field_inline")
-                        .map(|s| matches!(s.trim().to_lowercase().as_str(), "true" | "yes" | "1" | "y"))
+                        .map(|s| {
+                            matches!(s.trim().to_lowercase().as_str(), "true" | "yes" | "1" | "y")
+                        })
                         .unwrap_or(false);
                     if (!name.is_empty() || !value.is_empty()) && d.fields.len() < MAX_FIELDS {
                         d.fields.push(EmbedField {
-                            name: if name.is_empty() { "\u{200b}".to_string() } else { truncate(name, 256).to_string() },
-                            value: if value.is_empty() { "\u{200b}".to_string() } else { truncate(value, 1024).to_string() },
+                            name: if name.is_empty() {
+                                "\u{200b}".to_string()
+                            } else {
+                                truncate(name, 256).to_string()
+                            },
+                            value: if value.is_empty() {
+                                "\u{200b}".to_string()
+                            } else {
+                                truncate(value, 1024).to_string()
+                            },
                             inline,
                         });
                     }
@@ -793,7 +845,12 @@ impl EmbedCog {
     }
 
     /// Send a private (ephemeral) embed in response to a component.
-    async fn ephemeral(&self, ctx: &Context, interaction: &ComponentInteraction, embed: CreateEmbed) {
+    async fn ephemeral(
+        &self,
+        ctx: &Context,
+        interaction: &ComponentInteraction,
+        embed: CreateEmbed,
+    ) {
         let _ = interaction
             .create_response(
                 &ctx.http,
@@ -874,7 +931,14 @@ impl EmbedCog {
 
     // ---- legacy text subcommands ------------------------------------------
 
-    async fn handle_text(&self, ctx: &Context, msg: &Message, user_id: u64, subcmd: &str, arg: &str) {
+    async fn handle_text(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        user_id: u64,
+        subcmd: &str,
+        arg: &str,
+    ) {
         match subcmd {
             "title" => {
                 self.text_sessions.entry(user_id).or_default().title = opt(arg);
@@ -887,12 +951,16 @@ impl EmbedCog {
             "color" | "colour" => match parse_hex_color(arg) {
                 Some(c) => {
                     self.text_sessions.entry(user_id).or_default().color = Some(c);
-                    self.text_ack(ctx, msg, &format!("Color set to #{c:06X}.")).await;
+                    self.text_ack(ctx, msg, &format!("Color set to #{c:06X}."))
+                        .await;
                 }
                 None => {
                     let _ = msg
                         .channel_id
-                        .say(&ctx.http, "Invalid hex color. Example: `embed color ff5733`")
+                        .say(
+                            &ctx.http,
+                            "Invalid hex color. Example: `embed color ff5733`",
+                        )
                         .await;
                 }
             },
@@ -915,7 +983,10 @@ impl EmbedCog {
                 let mut session = self.text_sessions.entry(user_id).or_default();
                 if session.fields.len() >= MAX_FIELDS {
                     drop(session);
-                    let _ = msg.channel_id.say(&ctx.http, "This embed already has 25 fields.").await;
+                    let _ = msg
+                        .channel_id
+                        .say(&ctx.http, "This embed already has 25 fields.")
+                        .await;
                     return;
                 }
                 session.fields.push(EmbedField {
@@ -926,25 +997,30 @@ impl EmbedCog {
                 drop(session);
                 self.text_ack(ctx, msg, "Field added.").await;
             }
-            "preview" | "show" => match self.text_sessions.get(&user_id) {
-                Some(session) => {
-                    let embed = session.to_create_embed();
-                    drop(session);
-                    let _ = msg
-                        .channel_id
-                        .send_message(&ctx.http, CreateMessage::new().embed(embed))
-                        .await;
-                }
-                None => {
-                    let _ = msg
+            "preview" | "show" => {
+                match self.text_sessions.get(&user_id) {
+                    Some(session) => {
+                        let embed = session.to_create_embed();
+                        drop(session);
+                        let _ = msg
+                            .channel_id
+                            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                            .await;
+                    }
+                    None => {
+                        let _ = msg
                         .channel_id
                         .say(&ctx.http, "No active embed. Start with `embed title <text>` or `embed create`.")
                         .await;
+                    }
                 }
-            },
+            }
             "send" => {
                 let Some(channel_id) = parse::parse_channel_id(arg) else {
-                    let _ = msg.channel_id.say(&ctx.http, "Usage: `embed send <#channel>`").await;
+                    let _ = msg
+                        .channel_id
+                        .say(&ctx.http, "Usage: `embed send <#channel>`")
+                        .await;
                     return;
                 };
                 match self.text_sessions.get(&user_id) {
@@ -957,18 +1033,25 @@ impl EmbedCog {
                         {
                             Ok(_) => {
                                 self.text_sessions.remove(&user_id);
-                                self.text_ack(ctx, msg, &format!("Embed sent to <#{channel_id}>!")).await;
+                                self.text_ack(ctx, msg, &format!("Embed sent to <#{channel_id}>!"))
+                                    .await;
                             }
                             Err(_) => {
                                 let _ = msg
                                     .channel_id
-                                    .say(&ctx.http, "I couldn't send to that channel. Check my permissions.")
+                                    .say(
+                                        &ctx.http,
+                                        "I couldn't send to that channel. Check my permissions.",
+                                    )
                                     .await;
                             }
                         }
                     }
                     None => {
-                        let _ = msg.channel_id.say(&ctx.http, "No active embed to send.").await;
+                        let _ = msg
+                            .channel_id
+                            .say(&ctx.http, "No active embed to send.")
+                            .await;
                     }
                 }
             }
@@ -983,7 +1066,10 @@ impl EmbedCog {
     async fn text_ack(&self, ctx: &Context, msg: &Message, text: &str) {
         let _ = msg
             .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embeds::success_embed("Embed Creator", text)))
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().embed(embeds::success_embed("Embed Creator", text)),
+            )
             .await;
     }
 }
@@ -993,28 +1079,61 @@ impl EmbedCog {
 /// The main builder control layout (4 rows of buttons).
 fn build_main_components(data: &EmbedData) -> Vec<CreateActionRow> {
     let edit_row = CreateActionRow::Buttons(vec![
-        CreateButton::new(BTN_AUTHOR).label("Author").style(ButtonStyle::Primary).emoji('📝'),
-        CreateButton::new(BTN_BASE).label("Base").style(ButtonStyle::Primary).emoji('🗒'),
-        CreateButton::new(BTN_IMAGES).label("Images").style(ButtonStyle::Primary).emoji('🖼'),
-        CreateButton::new(BTN_FOOTER).label("Footer").style(ButtonStyle::Primary).emoji('📜'),
+        CreateButton::new(BTN_AUTHOR)
+            .label("Author")
+            .style(ButtonStyle::Primary)
+            .emoji('📝'),
+        CreateButton::new(BTN_BASE)
+            .label("Base")
+            .style(ButtonStyle::Primary)
+            .emoji('🗒'),
+        CreateButton::new(BTN_IMAGES)
+            .label("Images")
+            .style(ButtonStyle::Primary)
+            .emoji('🖼'),
+        CreateButton::new(BTN_FOOTER)
+            .label("Footer")
+            .style(ButtonStyle::Primary)
+            .emoji('📜'),
     ]);
     let field_row = CreateActionRow::Buttons(vec![
-        CreateButton::new(BTN_ADDFIELD).label("Add Field").style(ButtonStyle::Success).emoji('➕'),
+        CreateButton::new(BTN_ADDFIELD)
+            .label("Add Field")
+            .style(ButtonStyle::Success)
+            .emoji('➕'),
         CreateButton::new(BTN_REMOVEFIELD)
             .label("Remove Field")
             .style(ButtonStyle::Danger)
             .emoji('➖')
             .disabled(data.fields.is_empty()),
-        CreateButton::new(BTN_IMPORT).label("Import").style(ButtonStyle::Secondary).emoji('📥'),
+        CreateButton::new(BTN_IMPORT)
+            .label("Import")
+            .style(ButtonStyle::Secondary)
+            .emoji('📥'),
     ]);
     let io_row = CreateActionRow::Buttons(vec![
-        CreateButton::new(BTN_SEND).label("Send").style(ButtonStyle::Success).emoji('💬'),
-        CreateButton::new(BTN_EXPORT_JSON).label("Export JSON").style(ButtonStyle::Secondary).emoji('📤'),
-        CreateButton::new(BTN_EXPORT_MYST).label("Export to Mystbin").style(ButtonStyle::Secondary).emoji('🗄'),
+        CreateButton::new(BTN_SEND)
+            .label("Send")
+            .style(ButtonStyle::Success)
+            .emoji('💬'),
+        CreateButton::new(BTN_EXPORT_JSON)
+            .label("Export JSON")
+            .style(ButtonStyle::Secondary)
+            .emoji('📤'),
+        CreateButton::new(BTN_EXPORT_MYST)
+            .label("Export to Mystbin")
+            .style(ButtonStyle::Secondary)
+            .emoji('🗄'),
     ]);
     let finish_row = CreateActionRow::Buttons(vec![
-        CreateButton::new(BTN_COMPLETE).label("Complete").style(ButtonStyle::Success).emoji('✅'),
-        CreateButton::new(BTN_CANCEL).label("Cancel").style(ButtonStyle::Danger).emoji('❌'),
+        CreateButton::new(BTN_COMPLETE)
+            .label("Complete")
+            .style(ButtonStyle::Success)
+            .emoji('✅'),
+        CreateButton::new(BTN_CANCEL)
+            .label("Cancel")
+            .style(ButtonStyle::Danger)
+            .emoji('❌'),
     ]);
     vec![edit_row, field_row, io_row, finish_row]
 }
@@ -1032,7 +1151,8 @@ fn build_remove_components(data: &EmbedData) -> Vec<CreateActionRow> {
             } else {
                 truncate(&f.name, 90).to_string()
             };
-            CreateSelectMenuOption::new(format!("Field {}: {}", i + 1, name), i.to_string()).emoji('🗑')
+            CreateSelectMenuOption::new(format!("Field {}: {}", i + 1, name), i.to_string())
+                .emoji('🗑')
         })
         .collect();
     vec![
@@ -1042,10 +1162,12 @@ fn build_remove_components(data: &EmbedData) -> Vec<CreateActionRow> {
                 .min_values(1)
                 .max_values(1),
         ),
-        CreateActionRow::Buttons(vec![CreateButton::new(BTN_BACK)
-            .label("Back")
-            .style(ButtonStyle::Secondary)
-            .emoji('↩')]),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(BTN_BACK)
+                .label("Back")
+                .style(ButtonStyle::Secondary)
+                .emoji('↩'),
+        ]),
     ]
 }
 
@@ -1064,10 +1186,12 @@ fn build_send_components() -> Vec<CreateActionRow> {
             .min_values(1)
             .max_values(1),
         ),
-        CreateActionRow::Buttons(vec![CreateButton::new(BTN_BACK)
-            .label("Back")
-            .style(ButtonStyle::Secondary)
-            .emoji('↩')]),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(BTN_BACK)
+                .label("Back")
+                .style(ButtonStyle::Secondary)
+                .emoji('↩'),
+        ]),
     ]
 }
 
@@ -1095,12 +1219,14 @@ fn prefill(input: CreateInputText, value: &Option<String>) -> CreateInputText {
 
 fn build_author_modal(data: &EmbedData) -> CreateModal {
     let rows = vec![
-        CreateActionRow::InputText(
-            prefill(short("name", "Name", 256).placeholder("Author name"), &data.author_name),
-        ),
-        CreateActionRow::InputText(
-            prefill(short("author_url", "URL", 1024).placeholder("Author URL (optional)"), &data.author_url),
-        ),
+        CreateActionRow::InputText(prefill(
+            short("name", "Name", 256).placeholder("Author name"),
+            &data.author_name,
+        )),
+        CreateActionRow::InputText(prefill(
+            short("author_url", "URL", 1024).placeholder("Author URL (optional)"),
+            &data.author_url,
+        )),
         CreateActionRow::InputText(prefill(
             short("author_icon", "Icon URL", 1024).placeholder("Author icon URL (optional)"),
             &data.author_icon,
@@ -1112,7 +1238,10 @@ fn build_author_modal(data: &EmbedData) -> CreateModal {
 fn build_base_modal(data: &EmbedData) -> CreateModal {
     let color_value = data.color.map(|c| format!("#{c:06X}"));
     let rows = vec![
-        CreateActionRow::InputText(prefill(short("title", "Title", 256).placeholder("Title"), &data.title)),
+        CreateActionRow::InputText(prefill(
+            short("title", "Title", 256).placeholder("Title"),
+            &data.title,
+        )),
         CreateActionRow::InputText(prefill(
             paragraph("description", "Description", 4000).placeholder("Description (optional)"),
             &data.description,
@@ -1121,7 +1250,10 @@ fn build_base_modal(data: &EmbedData) -> CreateModal {
             short("color", "Color", 7).placeholder("#5865F2 (optional)"),
             &color_value,
         )),
-        CreateActionRow::InputText(prefill(short("url", "Title URL", 1024).placeholder("Title URL (optional)"), &data.url)),
+        CreateActionRow::InputText(prefill(
+            short("url", "Title URL", 1024).placeholder("Title URL (optional)"),
+            &data.url,
+        )),
     ];
     CreateModal::new(MODAL_BASE, "Edit Base").components(rows)
 }
@@ -1142,7 +1274,10 @@ fn build_images_modal(data: &EmbedData) -> CreateModal {
 
 fn build_footer_modal(data: &EmbedData) -> CreateModal {
     let rows = vec![
-        CreateActionRow::InputText(prefill(paragraph("text", "Text", 2048).placeholder("Footer text"), &data.footer_text)),
+        CreateActionRow::InputText(prefill(
+            paragraph("text", "Text", 2048).placeholder("Footer text"),
+            &data.footer_text,
+        )),
         CreateActionRow::InputText(prefill(
             short("footer_icon", "Icon URL", 1024).placeholder("Footer icon URL (optional)"),
             &data.footer_icon,
@@ -1154,7 +1289,9 @@ fn build_footer_modal(data: &EmbedData) -> CreateModal {
 fn build_addfield_modal() -> CreateModal {
     let rows = vec![
         CreateActionRow::InputText(short("field_name", "Name", 256).placeholder("Field name")),
-        CreateActionRow::InputText(paragraph("field_value", "Value", 1024).placeholder("Field value")),
+        CreateActionRow::InputText(
+            paragraph("field_value", "Value", 1024).placeholder("Field value"),
+        ),
         CreateActionRow::InputText(short("field_inline", "Inline", 5).placeholder("true / false")),
     ];
     CreateModal::new(MODAL_ADDFIELD, "Add Field").components(rows)
@@ -1185,7 +1322,11 @@ fn collect_inputs(interaction: &ModalInteraction) -> HashMap<String, String> {
 
 /// Parse a hex color like `#ff5733`, `ff5733`, or `0xff5733` into 0xRRGGBB.
 fn parse_hex_color(s: &str) -> Option<u32> {
-    let h = s.trim().trim_start_matches('#').trim_start_matches("0x").trim_start_matches("0X");
+    let h = s
+        .trim()
+        .trim_start_matches('#')
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
     if h.is_empty() || h.len() > 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }

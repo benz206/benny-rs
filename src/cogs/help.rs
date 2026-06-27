@@ -620,8 +620,14 @@ impl Cog for HelpCog {
         if arg.is_empty() {
             // Overview with the category dropdown.
             let embed = overview_embed(&prefix, &name, &icon);
-            self.send_interactive(ctx, msg.channel_id, msg.author.id.get(), embed, overview_components())
-                .await;
+            self.send_interactive(
+                ctx,
+                msg.channel_id,
+                msg.author.id.get(),
+                embed,
+                overview_components(),
+            )
+            .await;
             return;
         }
 
@@ -629,8 +635,14 @@ impl Cog for HelpCog {
         // lands on the category page while `help ban` opens the command page.
         if let Some(cat) = find_category(arg) {
             let embed = category_embed(cat, &prefix, &name, &icon);
-            self.send_interactive(ctx, msg.channel_id, msg.author.id.get(), embed, category_components(cat))
-                .await;
+            self.send_interactive(
+                ctx,
+                msg.channel_id,
+                msg.author.id.get(),
+                embed,
+                category_components(cat),
+            )
+            .await;
             return;
         }
         if let Some((cat, command)) = find_command(arg) {
@@ -899,7 +911,13 @@ fn category_embed(cat: &Category, prefix: &str, name: &str, icon: &str) -> Creat
 
 /// `help <command>` / command selection: the detailed command page, with an
 /// ANSI-coloured usage block mirroring help.py's `send_command_help`.
-fn command_embed(cat: &Category, cmd: &CmdInfo, prefix: &str, name: &str, icon: &str) -> CreateEmbed {
+fn command_embed(
+    cat: &Category,
+    cmd: &CmdInfo,
+    prefix: &str,
+    name: &str,
+    icon: &str,
+) -> CreateEmbed {
     let grey = esc("30");
     let wb = esc("1;37");
     let blue_ul = esc("4;34");

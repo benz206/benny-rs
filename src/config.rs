@@ -45,13 +45,27 @@ pub struct SpotifyConfig {
     pub client_secret: String,
 }
 
-fn default_prefix() -> String { ">".to_string() }
-fn default_mongo_uri() -> String { "mongodb://localhost:27017".to_string() }
-fn default_redis_uri() -> String { "redis://localhost:6379".to_string() }
-fn default_lavalink_host() -> String { "localhost".to_string() }
-fn default_lavalink_port() -> u16 { 2333 }
-fn default_lavalink_password() -> String { "youshallnotpass".to_string() }
-fn default_search_source() -> String { "ytsearch".to_string() }
+fn default_prefix() -> String {
+    ">".to_string()
+}
+fn default_mongo_uri() -> String {
+    "mongodb://localhost:27017".to_string()
+}
+fn default_redis_uri() -> String {
+    "redis://localhost:6379".to_string()
+}
+fn default_lavalink_host() -> String {
+    "localhost".to_string()
+}
+fn default_lavalink_port() -> u16 {
+    2333
+}
+fn default_lavalink_password() -> String {
+    "youshallnotpass".to_string()
+}
+fn default_search_source() -> String {
+    "ytsearch".to_string()
+}
 
 pub fn load_config() -> Result<Arc<BotConfig>> {
     let bytes = fs::read("config.json").context("reading config.json")?;

@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{Json, Router, extract::State, routing::get};
 use serde_json::json;
 use std::{net::SocketAddr, sync::Arc};
 

@@ -15,7 +15,11 @@ pub async fn register_global(ctx: &Context) {
     .await;
 }
 
-pub async fn handle_interaction(ctx: &Context, interaction: &Interaction, translate: &TranslateCog) {
+pub async fn handle_interaction(
+    ctx: &Context,
+    interaction: &Interaction,
+    translate: &TranslateCog,
+) {
     if let Some(app) = interaction.as_command() {
         match app.data.name.as_str() {
             "ping" => {

@@ -247,7 +247,8 @@ impl DevCog {
     /// `dev leave <guild_id>`: make the bot leave a guild.
     async fn cmd_leave(&self, ctx: &Context, msg: &Message, rest: &str) {
         let Ok(id) = rest.trim().parse::<u64>() else {
-            self.reply_error(ctx, msg, "Usage: `dev leave <guild_id>`").await;
+            self.reply_error(ctx, msg, "Usage: `dev leave <guild_id>`")
+                .await;
             return;
         };
         let gid = GuildId::new(id);
@@ -284,7 +285,10 @@ impl DevCog {
             .color(colors::RED)
             .timestamp(Timestamp::now());
         self.reply_embed(ctx, msg, embed).await;
-        tracing::warn!(owner = msg.author.id.get(), "dev close invoked; exiting process");
+        tracing::warn!(
+            owner = msg.author.id.get(),
+            "dev close invoked; exiting process"
+        );
         std::process::exit(0);
     }
 
@@ -449,9 +453,7 @@ impl DevCog {
                     Err(e) => Err(format!("Redis error: {e}")),
                 }
             }
-            "" => Err(
-                "Usage: `dev redis <get|set|search|info|cinfo|showall> ...`".to_string(),
-            ),
+            "" => Err("Usage: `dev redis <get|set|search|info|cinfo|showall> ...`".to_string()),
             other => Err(format!("Unknown redis subcommand `{other}`.")),
         };
         drop(conn);
@@ -605,7 +607,10 @@ fn format_git_msg(content: &str) -> String {
                 format!("\u{1b}[0;35m{line}\u{1b}[0m")
             } else if line.starts_with("Updating") {
                 format!("\u{1b}[0;33m{line}\u{1b}[0m")
-            } else if line.contains("insertion") || line.contains("deletion") || line.contains("changed") {
+            } else if line.contains("insertion")
+                || line.contains("deletion")
+                || line.contains("changed")
+            {
                 format!("\u{1b}[0;32m{line}\u{1b}[0m")
             } else {
                 line.to_string()
@@ -671,16 +676,18 @@ async fn base_system_embed() -> CreateEmbed {
         .list()
         .iter()
         .next()
-        .map(|d| (d.total_space().saturating_sub(d.available_space()), d.total_space()))
+        .map(|d| {
+            (
+                d.total_space().saturating_sub(d.available_space()),
+                d.total_space(),
+            )
+        })
         .unwrap_or((0, 0));
 
     let nets = Networks::new_with_refreshed_list();
-    let (rx, tx) = nets
-        .list()
-        .values()
-        .fold((0u64, 0u64), |(r, t), d| {
-            (r + d.total_received(), t + d.total_transmitted())
-        });
+    let (rx, tx) = nets.list().values().fold((0u64, 0u64), |(r, t), d| {
+        (r + d.total_received(), t + d.total_transmitted())
+    });
 
     let desc = format!(
         "```asciidoc\n\

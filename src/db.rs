@@ -10,16 +10,20 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             uses INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, name)
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS settings_prefixes (
             guild_id INTEGER NOT NULL,
             prefix TEXT NOT NULL,
             PRIMARY KEY (guild_id, prefix)
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS sentinels_config (
@@ -33,16 +37,20 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             insult REAL NOT NULL DEFAULT 0.85,
             identity_attack REAL NOT NULL DEFAULT 0.85,
             sexual_explicit REAL NOT NULL DEFAULT 0.85
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS sentinels_decancer (
             guild_id INTEGER PRIMARY KEY,
             enabled INTEGER NOT NULL DEFAULT 0,
             log_channel_id INTEGER
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS base_afk (
@@ -51,8 +59,10 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             message TEXT NOT NULL DEFAULT '',
             set_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, user_id)
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS welcome_config (
@@ -61,8 +71,10 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             message TEXT NOT NULL DEFAULT 'Welcome {member.mention} to {server}!',
             embed_json TEXT,
             enabled INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS goodbye_config (
@@ -71,16 +83,20 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             message TEXT NOT NULL DEFAULT 'Goodbye {member.name}!',
             embed_json TEXT,
             enabled INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS logging_webhooks (
             guild_id INTEGER PRIMARY KEY,
             webhook_url TEXT NOT NULL DEFAULT '',
             enabled INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     // Welcome/goodbye auto-assigned roles (one row per role per guild).
     sqlx::query(
@@ -88,8 +104,10 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             guild_id INTEGER NOT NULL,
             role_id INTEGER NOT NULL,
             PRIMARY KEY (guild_id, role_id)
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     // Sticky roles: persisted role ids (comma-separated) to reapply on rejoin.
     sqlx::query(
@@ -98,24 +116,30 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             user_id INTEGER NOT NULL,
             role_ids TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (guild_id, user_id)
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     // Whether sticky roles are enabled per guild.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS sticky_roles_config (
             guild_id INTEGER PRIMARY KEY,
             enabled INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     // Per-guild moderation config (e.g. mute role).
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mod_config (
             guild_id INTEGER PRIMARY KEY,
             mute_role_id INTEGER
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     // Active timed infractions (mutes / temp-bans) polled by the expiry task.
     sqlx::query(
@@ -126,8 +150,10 @@ pub async fn ensure_servers_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             action TEXT NOT NULL,
             expires_at INTEGER NOT NULL,
             PRIMARY KEY (guild_id, case_number)
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
@@ -139,8 +165,10 @@ pub async fn ensure_users_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             timezone TEXT,
             patron_level INTEGER NOT NULL DEFAULT 0,
             is_blacklisted INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS reminders_reminders (
@@ -148,16 +176,20 @@ pub async fn ensure_users_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             user_id INTEGER NOT NULL,
             content TEXT NOT NULL,
             fire_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     // Per-user reminder counter (mirrors Redis reminder:count:{user_id}).
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS reminders_users (
             user_id INTEGER PRIMARY KEY,
             reminder_count INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     // Premium redemption tokens.
     sqlx::query(
@@ -166,8 +198,10 @@ pub async fn ensure_users_schema(pool: &SqlitePool) -> sqlx::Result<()> {
             level INTEGER NOT NULL DEFAULT 0,
             redeemed INTEGER NOT NULL DEFAULT 0,
             owner_id INTEGER
-        )"
-    ).execute(pool).await?;
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
