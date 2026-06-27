@@ -31,10 +31,7 @@ async fn ping(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let db_ok = sqlx::query("SELECT 1")
-        .execute(state.servers_db())
-        .await
-        .is_ok();
+    let db_ok = state.servers_orm().ping().await.is_ok();
     let mongo_ok = state.mongo.is_some();
     let redis_ok = state.redis.is_some();
     Json(json!({

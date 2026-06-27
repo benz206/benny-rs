@@ -9,13 +9,13 @@
 
 // servers.db
 pub mod afk;
-pub mod decancer;
 pub mod goodbye_config;
 pub mod logging;
 pub mod mod_config;
 pub mod mod_timed;
 pub mod prefixes;
 pub mod sentinel_config;
+pub mod sentinels_decancer;
 pub mod sticky_roles;
 pub mod sticky_roles_config;
 pub mod tags;

@@ -1,6 +1,9 @@
 use super::Cog;
+use crate::entities::logging;
 use crate::state::{AppState, LoggingConfig};
 use async_trait::async_trait;
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
     ChannelId, Context, GuildChannel, GuildId, Member, Message, MessageId, Role, RoleId, User,
 };
@@ -91,18 +94,17 @@ fn user_display(u: &User) -> String {
 #[async_trait]
 impl Cog for LoggingCog {
     async fn on_ready(&self, _ctx: &Context) {
-        let rows: Vec<(i64, String, i64)> =
-            sqlx::query_as("SELECT guild_id, webhook_url, enabled FROM logging_webhooks")
-                .fetch_all(self.state.servers_db())
-                .await
-                .unwrap_or_default();
+        let rows = logging::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
 
-        for (guild_id, webhook_url, enabled) in rows {
+        for row in rows {
             self.state.logging_cache.insert(
-                guild_id as u64,
+                row.guild_id as u64,
                 LoggingConfig {
-                    webhook_url,
-                    enabled: enabled != 0,
+                    webhook_url: row.webhook_url,
+                    enabled: row.enabled,
                 },
             );
         }
@@ -144,13 +146,18 @@ impl Cog for LoggingCog {
                         .await;
                     return;
                 }
-                let _ = sqlx::query(
-                    "INSERT INTO logging_webhooks (guild_id, webhook_url, enabled) VALUES (?, ?, 1) \
-                     ON CONFLICT(guild_id) DO UPDATE SET webhook_url = excluded.webhook_url, enabled = 1",
+                let _ = logging::Entity::insert(logging::ActiveModel {
+                    guild_id: Set(guild_id as i64),
+                    webhook_url: Set(webhook_url.to_string()),
+                    enabled: Set(true),
+                    ..Default::default()
+                })
+                .on_conflict(
+                    OnConflict::column(logging::Column::GuildId)
+                        .update_columns([logging::Column::WebhookUrl, logging::Column::Enabled])
+                        .to_owned(),
                 )
-                .bind(guild_id as i64)
-                .bind(webhook_url)
-                .execute(self.state.servers_db())
+                .exec(self.state.servers_orm())
                 .await;
                 self.state.logging_cache.insert(
                     guild_id,
@@ -165,9 +172,10 @@ impl Cog for LoggingCog {
                     .await;
             }
             "disable" => {
-                let _ = sqlx::query("UPDATE logging_webhooks SET enabled = 0 WHERE guild_id = ?")
-                    .bind(guild_id as i64)
-                    .execute(self.state.servers_db())
+                let _ = logging::Entity::update_many()
+                    .col_expr(logging::Column::Enabled, Expr::value(false))
+                    .filter(logging::Column::GuildId.eq(guild_id as i64))
+                    .exec(self.state.servers_orm())
                     .await;
                 if let Some(mut e) = self.state.logging_cache.get_mut(&guild_id) {
                     e.enabled = false;

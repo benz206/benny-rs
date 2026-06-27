@@ -1,10 +1,13 @@
 use super::Cog;
+use crate::entities::{reminders, reminders_users};
 use crate::state::AppState;
 use crate::utils::time::parse_when;
 use crate::utils::{colors, format};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
 use serenity::all::{
     ButtonStyle, ComponentInteraction, ComponentInteractionDataKind, Context, CreateActionRow,
     CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
@@ -334,28 +337,27 @@ impl RemindersCog {
             return Err("Reminder is too long (max 1000 characters).");
         }
 
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM reminders_reminders WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_one(self.state.users_db())
-                .await
-                .unwrap_or(0);
-        if count >= MAX_REMINDERS {
+        let count = reminders::Entity::find()
+            .filter(reminders::Column::UserId.eq(user_id))
+            .count(self.state.users_orm())
+            .await
+            .unwrap_or(0);
+        if count as i64 >= MAX_REMINDERS {
             return Err("You already have 10 reminders. Delete some with `reminders delete <id>`.");
         }
 
-        let result = sqlx::query(
-            "INSERT INTO reminders_reminders (user_id, content, fire_at) VALUES (?, ?, ?)",
-        )
-        .bind(user_id)
-        .bind(content)
-        .bind(fire_at)
-        .execute(self.state.users_db())
+        let result = reminders::Entity::insert(reminders::ActiveModel {
+            user_id: Set(user_id),
+            content: Set(content.to_string()),
+            fire_at: Set(fire_at),
+            ..Default::default()
+        })
+        .exec(self.state.users_orm())
         .await;
 
         match result {
             Ok(r) => {
-                let id = r.last_insert_rowid();
+                let id = r.last_insert_id;
                 sync_user_count(&self.state, user_id).await;
                 Ok(id)
             }
@@ -368,13 +370,12 @@ impl RemindersCog {
 
     async fn cmd_list(&self, ctx: &Context, msg: &Message) {
         let user_id = msg.author.id.get() as i64;
-        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-            "SELECT id, content, fire_at FROM reminders_reminders WHERE user_id = ? ORDER BY fire_at",
-        )
-        .bind(user_id)
-        .fetch_all(self.state.users_db())
-        .await
-        .unwrap_or_default();
+        let rows = reminders::Entity::find()
+            .filter(reminders::Column::UserId.eq(user_id))
+            .order_by_asc(reminders::Column::FireAt)
+            .all(self.state.users_orm())
+            .await
+            .unwrap_or_default();
 
         let plural = if rows.len() == 1 { "" } else { "s" };
         let mut embed = CreateEmbed::new()
@@ -386,7 +387,8 @@ impl RemindersCog {
             .color(colors::BLUE)
             .timestamp(Timestamp::now());
 
-        for (id, content, fire_at) in rows {
+        for row in rows {
+            let (id, content, fire_at) = (row.id, row.content, row.fire_at);
             embed = embed.field(
                 format!("Reminder ID: {id}"),
                 format!(
@@ -417,15 +419,14 @@ impl RemindersCog {
         let user_id = msg.author.id.get() as i64;
 
         // Look up first so we can distinguish "not found" from "not yours".
-        let row: Option<(i64, String)> =
-            sqlx::query_as("SELECT user_id, content FROM reminders_reminders WHERE id = ?")
-                .bind(id)
-                .fetch_optional(self.state.users_db())
-                .await
-                .unwrap_or(None);
+        let row = reminders::Entity::find_by_id(id)
+            .one(self.state.users_orm())
+            .await
+            .ok()
+            .flatten();
 
         let (owner_id, content) = match row {
-            Some(r) => r,
+            Some(m) => (m.user_id, m.content),
             None => {
                 let _ = msg.channel_id.say(&ctx.http, "Reminder not found.").await;
                 return;
@@ -439,14 +440,14 @@ impl RemindersCog {
             return;
         }
 
-        let result = sqlx::query("DELETE FROM reminders_reminders WHERE id = ? AND user_id = ?")
-            .bind(id)
-            .bind(user_id)
-            .execute(self.state.users_db())
+        let result = reminders::Entity::delete_many()
+            .filter(reminders::Column::Id.eq(id))
+            .filter(reminders::Column::UserId.eq(user_id))
+            .exec(self.state.users_orm())
             .await;
 
         match result {
-            Ok(r) if r.rows_affected() > 0 => {
+            Ok(res) if res.rows_affected > 0 => {
                 sync_user_count(&self.state, user_id).await;
                 let embed = CreateEmbed::new()
                     .title("Deleted Reminder")
@@ -531,20 +532,22 @@ async fn ephemeral_error(ctx: &Context, interaction: &ComponentInteraction, text
 /// (Redis is skipped gracefully when unavailable). Shared with the background
 /// task so fires and deletions keep the counters authoritative.
 pub(crate) async fn sync_user_count(state: &AppState, user_id: i64) {
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM reminders_reminders WHERE user_id = ?")
-            .bind(user_id)
-            .fetch_one(state.users_db())
-            .await
-            .unwrap_or(0);
+    let count = reminders::Entity::find()
+        .filter(reminders::Column::UserId.eq(user_id))
+        .count(state.users_orm())
+        .await
+        .unwrap_or(0);
 
-    let _ = sqlx::query(
-        "INSERT INTO reminders_users (user_id, reminder_count) VALUES (?, ?)
-         ON CONFLICT(user_id) DO UPDATE SET reminder_count = excluded.reminder_count",
+    let _ = reminders_users::Entity::insert(reminders_users::ActiveModel {
+        user_id: Set(user_id),
+        reminder_count: Set(count as i64),
+    })
+    .on_conflict(
+        OnConflict::column(reminders_users::Column::UserId)
+            .update_columns([reminders_users::Column::ReminderCount])
+            .to_owned(),
     )
-    .bind(user_id)
-    .bind(count)
-    .execute(state.users_db())
+    .exec(state.users_orm())
     .await;
 
     if let Some(redis) = &state.redis {
@@ -552,7 +555,7 @@ pub(crate) async fn sync_user_count(state: &AppState, user_id: i64) {
         let key = format!("reminder:count:{user_id}");
         let _ = redis::cmd("SET")
             .arg(&key)
-            .arg(count)
+            .arg(count as i64)
             .exec_async(&mut *conn)
             .await;
     }

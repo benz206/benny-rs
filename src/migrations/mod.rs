@@ -56,7 +56,18 @@ impl MigrationName for InitServers {
 #[async_trait::async_trait]
 impl MigrationTrait for InitServers {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        run_all(manager, SERVERS_TABLES).await
+        run_all(manager, SERVERS_TABLES).await?;
+        // Upgrade path for a pre-existing servers.db whose `sentinels_config`
+        // was created (by the old db.rs) without `delete_flagged`. Fresh DBs
+        // already have the column from the CREATE above, so the duplicate-column
+        // error here is expected and ignored.
+        let _ = manager
+            .get_connection()
+            .execute_unprepared(
+                "ALTER TABLE sentinels_config ADD COLUMN delete_flagged INTEGER NOT NULL DEFAULT 0",
+            )
+            .await;
+        Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -105,7 +116,8 @@ const SERVERS_TABLES: &[&str] = &[
         threat REAL NOT NULL DEFAULT 0.85,
         insult REAL NOT NULL DEFAULT 0.85,
         identity_attack REAL NOT NULL DEFAULT 0.85,
-        sexual_explicit REAL NOT NULL DEFAULT 0.85
+        sexual_explicit REAL NOT NULL DEFAULT 0.85,
+        delete_flagged INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE TABLE IF NOT EXISTS sentinels_decancer (
         guild_id INTEGER PRIMARY KEY,

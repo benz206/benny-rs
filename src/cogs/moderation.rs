@@ -1,5 +1,6 @@
 use super::Cog;
 use crate::db_mongo::{self, ModCase};
+use crate::entities::{mod_config, mod_timed};
 use crate::state::AppState;
 use crate::utils::embeds::error_embed;
 use crate::utils::parse::parse_user_id;
@@ -7,6 +8,8 @@ use crate::utils::time::parse_when;
 use crate::utils::{colors, format};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use serenity::all::{
     Context, CreateEmbed, CreateEmbedFooter, CreateMessage, EditRole, GuildId, Http, Message,
     PermissionOverwrite, PermissionOverwriteType, Permissions, RoleId, Timestamp, UserId,
@@ -414,13 +417,12 @@ impl ModerationCog {
         }
 
         // Drop any scheduled temp-ban expiry for this user.
-        let _ = sqlx::query(
-            "DELETE FROM mod_timed WHERE guild_id = ? AND user_id = ? AND action = 'ban'",
-        )
-        .bind(guild_id.get() as i64)
-        .bind(target_id as i64)
-        .execute(self.state.servers_db())
-        .await;
+        let _ = mod_timed::Entity::delete_many()
+            .filter(mod_timed::Column::GuildId.eq(guild_id.get() as i64))
+            .filter(mod_timed::Column::UserId.eq(target_id as i64))
+            .filter(mod_timed::Column::Action.eq("ban"))
+            .exec(self.state.servers_orm())
+            .await;
 
         let case = self
             .create_case(
@@ -507,15 +509,23 @@ impl ModerationCog {
             Some(c) => c,
             None => self.fallback_case_number(guild_id).await,
         };
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO mod_timed (guild_id, case_number, user_id, action, expires_at) \
-             VALUES (?, ?, ?, 'mute', ?)",
+        let _ = mod_timed::Entity::insert(mod_timed::ActiveModel {
+            guild_id: Set(guild_id.get() as i64),
+            case_number: Set(case_number),
+            user_id: Set(target_id as i64),
+            action: Set("mute".to_string()),
+            expires_at: Set(expires_ts),
+        })
+        .on_conflict(
+            OnConflict::columns([mod_timed::Column::GuildId, mod_timed::Column::CaseNumber])
+                .update_columns([
+                    mod_timed::Column::UserId,
+                    mod_timed::Column::Action,
+                    mod_timed::Column::ExpiresAt,
+                ])
+                .to_owned(),
         )
-        .bind(guild_id.get() as i64)
-        .bind(case_number)
-        .bind(target_id as i64)
-        .bind(expires_ts)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
 
         let name = self.fetch_name(ctx, target_id).await;
@@ -544,13 +554,12 @@ impl ModerationCog {
             return;
         };
 
-        let stored: Option<i64> =
-            sqlx::query_scalar("SELECT mute_role_id FROM mod_config WHERE guild_id = ?")
-                .bind(guild_id.get() as i64)
-                .fetch_optional(self.state.servers_db())
-                .await
-                .ok()
-                .flatten();
+        let stored: Option<i64> = mod_config::Entity::find_by_id(guild_id.get() as i64)
+            .one(self.state.servers_orm())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| m.mute_role_id);
         let Some(role_id) = stored.map(|r| RoleId::new(r as u64)) else {
             self.reply_error(ctx, msg, "No **Muted** role is configured for this server.")
                 .await;
@@ -568,13 +577,12 @@ impl ModerationCog {
         }
 
         // Clear scheduled expiry rows for this user's mute.
-        let _ = sqlx::query(
-            "DELETE FROM mod_timed WHERE guild_id = ? AND user_id = ? AND action = 'mute'",
-        )
-        .bind(guild_id.get() as i64)
-        .bind(target_id as i64)
-        .execute(self.state.servers_db())
-        .await;
+        let _ = mod_timed::Entity::delete_many()
+            .filter(mod_timed::Column::GuildId.eq(guild_id.get() as i64))
+            .filter(mod_timed::Column::UserId.eq(target_id as i64))
+            .filter(mod_timed::Column::Action.eq("mute"))
+            .exec(self.state.servers_orm())
+            .await;
 
         let case = self
             .create_case(
@@ -740,13 +748,12 @@ impl ModerationCog {
     async fn ensure_mute_role(&self, ctx: &Context, guild_id: GuildId) -> Option<RoleId> {
         let gid = guild_id.get() as i64;
 
-        let stored: Option<i64> =
-            sqlx::query_scalar("SELECT mute_role_id FROM mod_config WHERE guild_id = ?")
-                .bind(gid)
-                .fetch_optional(self.state.servers_db())
-                .await
-                .ok()
-                .flatten();
+        let stored: Option<i64> = mod_config::Entity::find_by_id(gid)
+            .one(self.state.servers_orm())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| m.mute_role_id);
 
         // Reuse the stored role only if it still exists in the guild.
         if let Some(rid) = stored {
@@ -787,13 +794,16 @@ impl ModerationCog {
             }
         }
 
-        let _ = sqlx::query(
-            "INSERT INTO mod_config (guild_id, mute_role_id) VALUES (?, ?) \
-             ON CONFLICT(guild_id) DO UPDATE SET mute_role_id = excluded.mute_role_id",
+        let _ = mod_config::Entity::insert(mod_config::ActiveModel {
+            guild_id: Set(gid),
+            mute_role_id: Set(Some(role.id.get() as i64)),
+        })
+        .on_conflict(
+            OnConflict::column(mod_config::Column::GuildId)
+                .update_columns([mod_config::Column::MuteRoleId])
+                .to_owned(),
         )
-        .bind(gid)
-        .bind(role.id.get() as i64)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
 
         Some(role.id)
@@ -801,13 +811,15 @@ impl ModerationCog {
 
     /// Next mod_timed primary key when no Mongo case number is available.
     async fn fallback_case_number(&self, guild_id: GuildId) -> i64 {
-        let max: Option<i64> =
-            sqlx::query_scalar("SELECT MAX(case_number) FROM mod_timed WHERE guild_id = ?")
-                .bind(guild_id.get() as i64)
-                .fetch_optional(self.state.servers_db())
-                .await
-                .ok()
-                .flatten();
+        // Highest existing case number for the guild (NULL/no rows -> 0), +1.
+        let max: Option<i64> = mod_timed::Entity::find()
+            .filter(mod_timed::Column::GuildId.eq(guild_id.get() as i64))
+            .order_by_desc(mod_timed::Column::CaseNumber)
+            .one(self.state.servers_orm())
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.case_number);
         max.unwrap_or(0) + 1
     }
 }
@@ -907,13 +919,10 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
             sleep(Duration::from_secs(EXPIRY_INTERVAL_SECS)).await;
             let now = Utc::now().timestamp();
 
-            let rows: Vec<(i64, i64, i64, String, i64)> = match sqlx::query_as(
-                "SELECT guild_id, case_number, user_id, action, expires_at \
-                 FROM mod_timed WHERE expires_at <= ?",
-            )
-            .bind(now)
-            .fetch_all(state.servers_db())
-            .await
+            let rows = match mod_timed::Entity::find()
+                .filter(mod_timed::Column::ExpiresAt.lte(now))
+                .all(state.servers_orm())
+                .await
             {
                 Ok(r) => r,
                 Err(e) => {
@@ -922,20 +931,25 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
                 }
             };
 
-            for (gid, case_number, uid, action, _expires) in rows {
+            for row in rows {
+                let mod_timed::Model {
+                    guild_id: gid,
+                    case_number,
+                    user_id: uid,
+                    action,
+                    ..
+                } = row;
                 let guild_id = GuildId::new(gid as u64);
                 let user_id = UserId::new(uid as u64);
 
                 let lifted = match action.as_str() {
                     "mute" => {
-                        let role: Option<i64> = sqlx::query_scalar(
-                            "SELECT mute_role_id FROM mod_config WHERE guild_id = ?",
-                        )
-                        .bind(gid)
-                        .fetch_optional(state.servers_db())
-                        .await
-                        .ok()
-                        .flatten();
+                        let role: Option<i64> = mod_config::Entity::find_by_id(gid)
+                            .one(state.servers_orm())
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|m| m.mute_role_id);
                         match role {
                             Some(rid) => http
                                 .remove_member_role(
@@ -959,10 +973,10 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
 
                 // Always clear the row (a permanently failing target — e.g. a
                 // user who already left — must not wedge the sweeper).
-                let _ = sqlx::query("DELETE FROM mod_timed WHERE guild_id = ? AND case_number = ?")
-                    .bind(gid)
-                    .bind(case_number)
-                    .execute(state.servers_db())
+                let _ = mod_timed::Entity::delete_many()
+                    .filter(mod_timed::Column::GuildId.eq(gid))
+                    .filter(mod_timed::Column::CaseNumber.eq(case_number))
+                    .exec(state.servers_orm())
                     .await;
 
                 if let Some(mongo) = &state.mongo {

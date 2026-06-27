@@ -15,6 +15,9 @@ pub struct Model {
     pub insult: f64,
     pub identity_attack: f64,
     pub sexual_explicit: f64,
+    /// Whether flagged messages are auto-deleted. Historically added to the
+    /// table via a runtime `ALTER TABLE`; now part of the migration schema.
+    pub delete_flagged: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

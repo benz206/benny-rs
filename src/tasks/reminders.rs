@@ -1,6 +1,8 @@
 use crate::cogs::reminders::sync_user_count;
+use crate::entities::reminders;
 use crate::state::AppState;
 use crate::utils::colors;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serenity::all::{CreateEmbed, CreateEmbedFooter, CreateMessage, Timestamp, UserId};
 use serenity::http::Http;
 use std::collections::HashSet;
@@ -15,17 +17,16 @@ pub fn spawn_reminder_task(state: Arc<AppState>, http: Arc<Http>) {
         info!("reminder task started");
         loop {
             let now = chrono::Utc::now().timestamp();
-            let due: Vec<(i64, i64, String)> = sqlx::query_as(
-                "SELECT id, user_id, content FROM reminders_reminders WHERE fire_at <= ?",
-            )
-            .bind(now)
-            .fetch_all(state.users_db())
-            .await
-            .unwrap_or_default();
+            let due = reminders::Entity::find()
+                .filter(reminders::Column::FireAt.lte(now))
+                .all(state.users_orm())
+                .await
+                .unwrap_or_default();
 
             let mut affected: HashSet<i64> = HashSet::new();
 
-            for (id, user_id, content) in due {
+            for row in due {
+                let (id, user_id, content) = (row.id, row.user_id, row.content);
                 let uid = UserId::new(user_id as u64);
                 let embed = CreateEmbed::new()
                     .title("Reminder")
@@ -49,9 +50,9 @@ pub fn spawn_reminder_task(state: Arc<AppState>, http: Arc<Http>) {
                 }
 
                 // Delete regardless of DM success so a blocked DM can't loop forever.
-                let _ = sqlx::query("DELETE FROM reminders_reminders WHERE id = ?")
-                    .bind(id)
-                    .execute(state.users_db())
+                let _ = reminders::Entity::delete_many()
+                    .filter(reminders::Column::Id.eq(id))
+                    .exec(state.users_orm())
                     .await;
                 affected.insert(user_id);
             }

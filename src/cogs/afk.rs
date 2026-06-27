@@ -1,8 +1,11 @@
 use super::Cog;
+use crate::entities::afk;
 use crate::state::{AfkEntry, AppState};
 use crate::utils::format::humanize_duration;
 use async_trait::async_trait;
 use chrono::Utc;
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
     Colour, Context, CreateEmbed, CreateEmbedFooter, CreateMessage, Message, Timestamp,
 };
@@ -26,16 +29,15 @@ impl AfkCog {
 #[async_trait]
 impl Cog for AfkCog {
     async fn on_ready(&self, _ctx: &Context) {
-        let rows: Vec<(i64, i64, String, i64)> =
-            sqlx::query_as("SELECT guild_id, user_id, message, set_at FROM base_afk")
-                .fetch_all(self.state.servers_db())
-                .await
-                .unwrap_or_default();
+        let rows = afk::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
 
-        for (guild_id, user_id, message, set_at) in rows {
+        for m in rows {
             self.state.afk_cache.insert(
-                (guild_id as u64, user_id as u64),
-                AfkEntry { message, set_at },
+                (m.guild_id as u64, m.user_id as u64),
+                AfkEntry { message: m.message, set_at: m.set_at },
             );
         }
         tracing::info!("AFK cache loaded ({} entries)", self.state.afk_cache.len());
@@ -80,14 +82,18 @@ impl AfkCog {
                 set_at,
             },
         );
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO base_afk (guild_id, user_id, message, set_at) VALUES (?, ?, ?, ?)",
+        let _ = afk::Entity::insert(afk::ActiveModel {
+            guild_id: Set(guild_id as i64),
+            user_id: Set(user_id as i64),
+            message: Set(message.clone()),
+            set_at: Set(set_at),
+        })
+        .on_conflict(
+            OnConflict::columns([afk::Column::GuildId, afk::Column::UserId])
+                .update_columns([afk::Column::Message, afk::Column::SetAt])
+                .to_owned(),
         )
-        .bind(guild_id as i64)
-        .bind(user_id as i64)
-        .bind(&message)
-        .bind(set_at)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
 
         let avatar = msg
@@ -124,10 +130,10 @@ impl AfkCog {
         if let Some(entry) = own {
             if entry.set_at + 3 < now {
                 self.state.afk_cache.remove(&(guild_id, user_id));
-                let _ = sqlx::query("DELETE FROM base_afk WHERE guild_id = ? AND user_id = ?")
-                    .bind(guild_id as i64)
-                    .bind(user_id as i64)
-                    .execute(self.state.servers_db())
+                let _ = afk::Entity::delete_many()
+                    .filter(afk::Column::GuildId.eq(guild_id as i64))
+                    .filter(afk::Column::UserId.eq(user_id as i64))
+                    .exec(self.state.servers_orm())
                     .await;
 
                 let dur =

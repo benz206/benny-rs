@@ -1,7 +1,10 @@
 use super::Cog;
+use crate::entities::prefixes;
 use crate::state::AppState;
 use crate::utils::{colors, embeds};
 use async_trait::async_trait;
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serenity::all::{
     Context, CreateEmbed, CreateMessage, Guild, Message, Timestamp, UnavailableGuild,
 };
@@ -54,15 +57,14 @@ impl PrefixesCog {
         if let Some(entry) = self.state.prefix_cache.get(&guild_id) {
             return entry.clone();
         }
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT prefix FROM settings_prefixes WHERE guild_id = ?")
-                .bind(guild_id as i64)
-                .fetch_all(self.state.servers_db())
-                .await
-                .unwrap_or_default();
-        let mut prefixes: Vec<String> = rows.into_iter().map(|(p,)| p).collect();
-        prefixes.sort_by_key(|p| p.len());
-        prefixes
+        let rows = prefixes::Entity::find()
+            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
+        let mut result: Vec<String> = rows.into_iter().map(|m| m.prefix).collect();
+        result.sort_by_key(|p| p.len());
+        result
     }
 }
 
@@ -70,19 +72,18 @@ impl PrefixesCog {
 impl Cog for PrefixesCog {
     /// Hydrate `prefix_cache` from the DB on startup.
     async fn on_ready(&self, _ctx: &Context) {
-        let rows: Vec<(i64, String)> =
-            sqlx::query_as("SELECT guild_id, prefix FROM settings_prefixes")
-                .fetch_all(self.state.servers_db())
-                .await
-                .unwrap_or_default();
+        let rows = prefixes::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
 
         let mut count = 0usize;
-        for (guild_id, prefix) in rows {
+        for m in rows {
             self.state
                 .prefix_cache
-                .entry(guild_id as u64)
+                .entry(m.guild_id as u64)
                 .or_default()
-                .push(prefix);
+                .push(m.prefix);
             count += 1;
         }
         // Keep each guild's prefixes sorted by length (matches Python).
@@ -103,12 +104,16 @@ impl Cog for PrefixesCog {
         let existing = self.current_prefixes(guild_id).await;
         if existing.is_empty() {
             let default = self.state.prefix().to_string();
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO settings_prefixes (guild_id, prefix) VALUES (?, ?)",
+            let _ = prefixes::Entity::insert(prefixes::ActiveModel {
+                guild_id: Set(guild_id as i64),
+                prefix: Set(default.clone()),
+            })
+            .on_conflict(
+                OnConflict::columns([prefixes::Column::GuildId, prefixes::Column::Prefix])
+                    .do_nothing()
+                    .to_owned(),
             )
-            .bind(guild_id as i64)
-            .bind(&default)
-            .execute(self.state.servers_db())
+            .exec(self.state.servers_orm())
             .await;
             self.state.prefix_cache.insert(guild_id, vec![default]);
         } else {
@@ -124,9 +129,9 @@ impl Cog for PrefixesCog {
         _full: Option<Guild>,
     ) {
         let guild_id = incomplete.id.get();
-        let _ = sqlx::query("DELETE FROM settings_prefixes WHERE guild_id = ?")
-            .bind(guild_id as i64)
-            .execute(self.state.servers_db())
+        let _ = prefixes::Entity::delete_many()
+            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
+            .exec(self.state.servers_orm())
             .await;
         self.state.prefix_cache.remove(&guild_id);
     }
@@ -233,18 +238,26 @@ impl PrefixesCog {
             return;
         }
 
-        let result =
-            sqlx::query("INSERT OR IGNORE INTO settings_prefixes (guild_id, prefix) VALUES (?, ?)")
-                .bind(guild_id as i64)
-                .bind(&clean)
-                .execute(self.state.servers_db())
-                .await;
+        let result = prefixes::Entity::insert(prefixes::ActiveModel {
+            guild_id: Set(guild_id as i64),
+            prefix: Set(clean.clone()),
+        })
+        .on_conflict(
+            OnConflict::columns([prefixes::Column::GuildId, prefixes::Column::Prefix])
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec(self.state.servers_orm())
+        .await;
 
-        if let Err(e) = result {
-            tracing::error!(error = ?e, "failed to add prefix");
-            self.send_embed(ctx, msg, embeds::error_embed("Database error."))
-                .await;
-            return;
+        match result {
+            Ok(_) | Err(DbErr::RecordNotInserted) => {}
+            Err(e) => {
+                tracing::error!(error = ?e, "failed to add prefix");
+                self.send_embed(ctx, msg, embeds::error_embed("Database error."))
+                    .await;
+                return;
+            }
         }
 
         prefixes.push(clean.clone());
@@ -292,10 +305,10 @@ impl PrefixesCog {
             return;
         }
 
-        let result = sqlx::query("DELETE FROM settings_prefixes WHERE guild_id = ? AND prefix = ?")
-            .bind(guild_id as i64)
-            .bind(&clean)
-            .execute(self.state.servers_db())
+        let result = prefixes::Entity::delete_many()
+            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
+            .filter(prefixes::Column::Prefix.eq(clean.as_str()))
+            .exec(self.state.servers_orm())
             .await;
 
         if let Err(e) = result {
@@ -347,9 +360,9 @@ impl PrefixesCog {
     }
 
     async fn cmd_reset(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        let _ = sqlx::query("DELETE FROM settings_prefixes WHERE guild_id = ?")
-            .bind(guild_id as i64)
-            .execute(self.state.servers_db())
+        let _ = prefixes::Entity::delete_many()
+            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
+            .exec(self.state.servers_orm())
             .await;
         self.state.prefix_cache.remove(&guild_id);
 

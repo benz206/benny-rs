@@ -1,7 +1,10 @@
 use super::Cog;
+use crate::entities::{goodbye_config, logging, prefixes, sentinel_config, settings_users, welcome_config};
 use crate::state::AppState;
 use crate::utils::{colors, embeds, parse};
 use async_trait::async_trait;
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
     ButtonStyle, ComponentInteraction, Context, CreateActionRow, CreateButton, CreateEmbed,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, Message, Timestamp,
@@ -58,13 +61,12 @@ impl SettingsCog {
         if let Some(entry) = self.state.prefix_cache.get(&guild_id) {
             return entry.clone();
         }
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT prefix FROM settings_prefixes WHERE guild_id = ?")
-                .bind(guild_id as i64)
-                .fetch_all(self.state.servers_db())
-                .await
-                .unwrap_or_default();
-        rows.into_iter().map(|(p,)| p).collect()
+        let rows = prefixes::Entity::find()
+            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
+        rows.into_iter().map(|m| m.prefix).collect()
     }
 }
 
@@ -217,17 +219,14 @@ impl SettingsCog {
 
         // --- User settings (settings_users) ---
         let user_id = msg.author.id.get() as i64;
-        let user_row: Option<(Option<String>, i64, i64)> = sqlx::query_as(
-            "SELECT timezone, patron_level, is_blacklisted FROM settings_users WHERE user_id = ?",
-        )
-        .bind(user_id)
-        .fetch_optional(self.state.users_db())
-        .await
-        .ok()
-        .flatten();
+        let user_row = settings_users::Entity::find_by_id(user_id)
+            .one(self.state.users_orm())
+            .await
+            .ok()
+            .flatten();
 
         let (timezone, patron_level, is_blacklisted) = match user_row {
-            Some((tz, patron, blk)) => (tz, patron, blk != 0),
+            Some(m) => (m.timezone, m.patron_level, m.is_blacklisted),
             None => (None, 0, false),
         };
         let timezone_str = timezone.unwrap_or_else(|| "Not set".to_string());
@@ -289,26 +288,25 @@ impl SettingsCog {
     /// Delete every per-guild settings row and drop the cached copies.
     async fn do_reset(&self, guild_id: u64) {
         let gid = guild_id as i64;
-        let pool = self.state.servers_db();
-        let _ = sqlx::query("DELETE FROM settings_prefixes WHERE guild_id = ?")
-            .bind(gid)
-            .execute(pool)
+        let _ = prefixes::Entity::delete_many()
+            .filter(prefixes::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
             .await;
-        let _ = sqlx::query("DELETE FROM welcome_config WHERE guild_id = ?")
-            .bind(gid)
-            .execute(pool)
+        let _ = welcome_config::Entity::delete_many()
+            .filter(welcome_config::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
             .await;
-        let _ = sqlx::query("DELETE FROM goodbye_config WHERE guild_id = ?")
-            .bind(gid)
-            .execute(pool)
+        let _ = goodbye_config::Entity::delete_many()
+            .filter(goodbye_config::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
             .await;
-        let _ = sqlx::query("DELETE FROM logging_webhooks WHERE guild_id = ?")
-            .bind(gid)
-            .execute(pool)
+        let _ = logging::Entity::delete_many()
+            .filter(logging::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
             .await;
-        let _ = sqlx::query("DELETE FROM sentinels_config WHERE guild_id = ?")
-            .bind(gid)
-            .execute(pool)
+        let _ = sentinel_config::Entity::delete_many()
+            .filter(sentinel_config::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
             .await;
 
         self.state.prefix_cache.remove(&guild_id);
@@ -344,13 +342,17 @@ impl SettingsCog {
         }
 
         let user_id = msg.author.id.get() as i64;
-        let result = sqlx::query(
-            "INSERT INTO settings_users (user_id, timezone) VALUES (?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET timezone = excluded.timezone",
+        let result = settings_users::Entity::insert(settings_users::ActiveModel {
+            user_id: Set(user_id),
+            timezone: Set(Some(arg.to_string())),
+            ..Default::default()
+        })
+        .on_conflict(
+            OnConflict::column(settings_users::Column::UserId)
+                .update_columns([settings_users::Column::Timezone])
+                .to_owned(),
         )
-        .bind(user_id)
-        .bind(arg)
-        .execute(self.state.users_db())
+        .exec(self.state.users_orm())
         .await;
 
         match result {
@@ -390,12 +392,17 @@ impl SettingsCog {
 
         match subcmd {
             "add" => {
-                let _ = sqlx::query(
-                    "INSERT INTO settings_users (user_id, is_blacklisted) VALUES (?, 1) \
-                     ON CONFLICT(user_id) DO UPDATE SET is_blacklisted = 1",
+                let _ = settings_users::Entity::insert(settings_users::ActiveModel {
+                    user_id: Set(user_id),
+                    is_blacklisted: Set(true),
+                    ..Default::default()
+                })
+                .on_conflict(
+                    OnConflict::column(settings_users::Column::UserId)
+                        .update_columns([settings_users::Column::IsBlacklisted])
+                        .to_owned(),
                 )
-                .bind(user_id)
-                .execute(self.state.users_db())
+                .exec(self.state.users_orm())
                 .await;
                 let _ = msg
                     .channel_id
@@ -403,11 +410,14 @@ impl SettingsCog {
                     .await;
             }
             "remove" => {
-                let _ =
-                    sqlx::query("UPDATE settings_users SET is_blacklisted = 0 WHERE user_id = ?")
-                        .bind(user_id)
-                        .execute(self.state.users_db())
-                        .await;
+                let _ = settings_users::Entity::update_many()
+                    .col_expr(
+                        settings_users::Column::IsBlacklisted,
+                        Expr::value(false),
+                    )
+                    .filter(settings_users::Column::UserId.eq(user_id))
+                    .exec(self.state.users_orm())
+                    .await;
                 let _ = msg
                     .channel_id
                     .say(&ctx.http, format!("<@{user_id}> removed from blacklist."))

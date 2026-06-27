@@ -1,8 +1,11 @@
 use super::Cog;
+use crate::entities::{sentinel_config, sentinels_decancer};
 use crate::state::{AppState, SentinelConfig};
 use crate::utils::{colors, embeds, parse};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
     ActionRowComponent, ButtonStyle, ChannelId, ComponentInteraction, Context, CreateActionRow,
     CreateButton, CreateEmbed, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
@@ -62,67 +65,42 @@ impl SentinelCog {
 #[async_trait]
 impl Cog for SentinelCog {
     async fn on_ready(&self, _ctx: &Context) {
-        // The benny-rs schema (db.rs) creates `sentinels_config` without a
-        // delete flag; add it idempotently (SQLite has no ADD COLUMN IF NOT
-        // EXISTS, so we ignore the "duplicate column" error on later runs).
-        let _ = sqlx::query(
-            "ALTER TABLE sentinels_config ADD COLUMN delete_flagged INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(self.state.servers_db())
-        .await;
-
         // Load sentinel configs.
-        let rows: Vec<(i64, i64, Option<i64>, f64, f64, f64, f64, f64, f64, f64, i64)> = sqlx::query_as(
-            "SELECT guild_id, enabled, log_channel_id, toxicity, severe_toxicity, obscene, threat, insult, identity_attack, sexual_explicit, delete_flagged FROM sentinels_config",
-        )
-        .fetch_all(self.state.servers_db())
-        .await
-        .unwrap_or_default();
+        let rows = sentinel_config::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
 
-        for (
-            guild_id,
-            enabled,
-            log_channel_id,
-            toxicity,
-            severe_toxicity,
-            obscene,
-            threat,
-            insult,
-            identity_attack,
-            sexual_explicit,
-            delete_flagged,
-        ) in rows
-        {
+        for m in rows {
             self.state.sentinel_cache.insert(
-                guild_id as u64,
+                m.guild_id as u64,
                 SentinelConfig {
-                    enabled: enabled != 0,
-                    log_channel_id,
-                    toxicity,
-                    severe_toxicity,
-                    obscene,
-                    threat,
-                    insult,
-                    identity_attack,
-                    sexual_explicit,
+                    enabled: m.enabled,
+                    log_channel_id: m.log_channel_id,
+                    toxicity: m.toxicity,
+                    severe_toxicity: m.severe_toxicity,
+                    obscene: m.obscene,
+                    threat: m.threat,
+                    insult: m.insult,
+                    identity_attack: m.identity_attack,
+                    sexual_explicit: m.sexual_explicit,
                 },
             );
             self.delete_flags
-                .insert(guild_id as u64, delete_flagged != 0);
+                .insert(m.guild_id as u64, m.delete_flagged);
         }
 
         // Load decancer configs.
-        let drows: Vec<(i64, i64, Option<i64>)> =
-            sqlx::query_as("SELECT guild_id, enabled, log_channel_id FROM sentinels_decancer")
-                .fetch_all(self.state.servers_db())
-                .await
-                .unwrap_or_default();
-        for (guild_id, enabled, log_channel_id) in drows {
+        let drows = sentinels_decancer::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
+        for m in drows {
             self.decancer_cache.insert(
-                guild_id as u64,
+                m.guild_id as u64,
                 DecancerConfig {
-                    enabled: enabled != 0,
-                    log_channel_id,
+                    enabled: m.enabled,
+                    log_channel_id: m.log_channel_id,
                 },
             );
         }
@@ -435,11 +413,17 @@ impl SentinelCog {
     ) {
         match subcmd {
             "enable" => {
-                let _ = sqlx::query(
-                    "INSERT INTO sentinels_config (guild_id, enabled) VALUES (?, 1) ON CONFLICT(guild_id) DO UPDATE SET enabled = 1",
+                let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
+                    guild_id: Set(guild_id as i64),
+                    enabled: Set(true),
+                    ..Default::default()
+                })
+                .on_conflict(
+                    OnConflict::column(sentinel_config::Column::GuildId)
+                        .update_column(sentinel_config::Column::Enabled)
+                        .to_owned(),
                 )
-                .bind(guild_id as i64)
-                .execute(self.state.servers_db())
+                .exec(self.state.servers_orm())
                 .await;
                 {
                     let mut e = self
@@ -461,9 +445,10 @@ impl SentinelCog {
                     .await;
             }
             "disable" => {
-                let _ = sqlx::query("UPDATE sentinels_config SET enabled = 0 WHERE guild_id = ?")
-                    .bind(guild_id as i64)
-                    .execute(self.state.servers_db())
+                let _ = sentinel_config::Entity::update_many()
+                    .col_expr(sentinel_config::Column::Enabled, Expr::value(false))
+                    .filter(sentinel_config::Column::GuildId.eq(guild_id as i64))
+                    .exec(self.state.servers_orm())
                     .await;
                 if let Some(mut e) = self.state.sentinel_cache.get_mut(&guild_id) {
                     e.enabled = false;
@@ -556,12 +541,17 @@ impl SentinelCog {
                         .await;
                     return;
                 }
-                let _ = sqlx::query(
-                    "INSERT INTO sentinels_config (guild_id, delete_flagged) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET delete_flagged = excluded.delete_flagged",
+                let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
+                    guild_id: Set(guild_id as i64),
+                    delete_flagged: Set(on),
+                    ..Default::default()
+                })
+                .on_conflict(
+                    OnConflict::column(sentinel_config::Column::GuildId)
+                        .update_column(sentinel_config::Column::DeleteFlagged)
+                        .to_owned(),
                 )
-                .bind(guild_id as i64)
-                .bind(on as i64)
-                .execute(self.state.servers_db())
+                .exec(self.state.servers_orm())
                 .await;
                 self.delete_flags.insert(guild_id, on);
                 let _ = msg
@@ -657,14 +647,79 @@ impl SentinelCog {
     /// Upsert one threshold column and mirror it into the cache. `col` must be a
     /// validated `CATEGORIES` key (column names cannot be bound parameters).
     async fn set_threshold(&self, guild_id: u64, col: &str, value: f64) {
-        let query = format!(
-            "INSERT INTO sentinels_config (guild_id, {col}) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET {col} = excluded.{col}"
-        );
-        let _ = sqlx::query(sqlx::AssertSqlSafe(query))
-            .bind(guild_id as i64)
-            .bind(value)
-            .execute(self.state.servers_db())
-            .await;
+        // The column name can't be a bound parameter, so map the validated
+        // `col` to its typed entity column and upsert just that threshold.
+        use sentinel_config::Column as C;
+        let gid = guild_id as i64;
+        let upsert = match col {
+            "toxicity" => Some((
+                sentinel_config::ActiveModel {
+                    guild_id: Set(gid),
+                    toxicity: Set(value),
+                    ..Default::default()
+                },
+                C::Toxicity,
+            )),
+            "severe_toxicity" => Some((
+                sentinel_config::ActiveModel {
+                    guild_id: Set(gid),
+                    severe_toxicity: Set(value),
+                    ..Default::default()
+                },
+                C::SevereToxicity,
+            )),
+            "obscene" => Some((
+                sentinel_config::ActiveModel {
+                    guild_id: Set(gid),
+                    obscene: Set(value),
+                    ..Default::default()
+                },
+                C::Obscene,
+            )),
+            "threat" => Some((
+                sentinel_config::ActiveModel {
+                    guild_id: Set(gid),
+                    threat: Set(value),
+                    ..Default::default()
+                },
+                C::Threat,
+            )),
+            "insult" => Some((
+                sentinel_config::ActiveModel {
+                    guild_id: Set(gid),
+                    insult: Set(value),
+                    ..Default::default()
+                },
+                C::Insult,
+            )),
+            "identity_attack" => Some((
+                sentinel_config::ActiveModel {
+                    guild_id: Set(gid),
+                    identity_attack: Set(value),
+                    ..Default::default()
+                },
+                C::IdentityAttack,
+            )),
+            "sexual_explicit" => Some((
+                sentinel_config::ActiveModel {
+                    guild_id: Set(gid),
+                    sexual_explicit: Set(value),
+                    ..Default::default()
+                },
+                C::SexualExplicit,
+            )),
+            _ => None,
+        };
+        if let Some((am, update_col)) = upsert {
+            let _ = sentinel_config::Entity::insert(am)
+                .on_conflict(
+                    OnConflict::column(C::GuildId)
+                        .update_column(update_col)
+                        .to_owned(),
+                )
+                .exec(self.state.servers_orm())
+                .await;
+        }
 
         let mut e = self
             .state
@@ -684,12 +739,17 @@ impl SentinelCog {
     }
 
     async fn set_log_channel(&self, guild_id: u64, channel_id: i64) {
-        let _ = sqlx::query(
-            "INSERT INTO sentinels_config (guild_id, log_channel_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET log_channel_id = excluded.log_channel_id",
+        let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
+            guild_id: Set(guild_id as i64),
+            log_channel_id: Set(Some(channel_id)),
+            ..Default::default()
+        })
+        .on_conflict(
+            OnConflict::column(sentinel_config::Column::GuildId)
+                .update_column(sentinel_config::Column::LogChannelId)
+                .to_owned(),
         )
-        .bind(guild_id as i64)
-        .bind(channel_id)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
         let mut e = self
             .state
@@ -742,13 +802,11 @@ impl SentinelCog {
             "logs" => {
                 let cid = parse::parse_channel_id(arg).unwrap_or_else(|| msg.channel_id.get());
                 self.ensure_decancer_row(guild_id).await;
-                let _ = sqlx::query(
-                    "UPDATE sentinels_decancer SET log_channel_id = ? WHERE guild_id = ?",
-                )
-                .bind(cid as i64)
-                .bind(guild_id as i64)
-                .execute(self.state.servers_db())
-                .await;
+                let _ = sentinels_decancer::Entity::update_many()
+                    .col_expr(sentinels_decancer::Column::LogChannelId, Expr::value(cid as i64))
+                    .filter(sentinels_decancer::Column::GuildId.eq(guild_id as i64))
+                    .exec(self.state.servers_orm())
+                    .await;
                 {
                     let mut e = self
                         .decancer_cache
@@ -843,20 +901,26 @@ impl SentinelCog {
     }
 
     async fn ensure_decancer_row(&self, guild_id: u64) {
-        let _ = sqlx::query(
-            "INSERT OR IGNORE INTO sentinels_decancer (guild_id, enabled, log_channel_id) VALUES (?, 0, NULL)",
+        let _ = sentinels_decancer::Entity::insert(sentinels_decancer::ActiveModel {
+            guild_id: Set(guild_id as i64),
+            enabled: Set(false),
+            log_channel_id: Set(None),
+        })
+        .on_conflict(
+            OnConflict::column(sentinels_decancer::Column::GuildId)
+                .do_nothing()
+                .to_owned(),
         )
-        .bind(guild_id as i64)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
     }
 
     async fn set_decancer_enabled(&self, guild_id: u64, enabled: bool) {
         self.ensure_decancer_row(guild_id).await;
-        let _ = sqlx::query("UPDATE sentinels_decancer SET enabled = ? WHERE guild_id = ?")
-            .bind(enabled as i64)
-            .bind(guild_id as i64)
-            .execute(self.state.servers_db())
+        let _ = sentinels_decancer::Entity::update_many()
+            .col_expr(sentinels_decancer::Column::Enabled, Expr::value(enabled))
+            .filter(sentinels_decancer::Column::GuildId.eq(guild_id as i64))
+            .exec(self.state.servers_orm())
             .await;
         let mut e = self
             .decancer_cache

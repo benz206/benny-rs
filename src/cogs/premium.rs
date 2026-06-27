@@ -1,8 +1,11 @@
 use super::Cog;
+use crate::entities::{premium_tokens, settings_users};
 use crate::state::AppState;
 use crate::utils::embeds::error_embed;
 use crate::utils::format;
 use async_trait::async_trait;
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ActiveModelTrait, EntityTrait, Order, QueryOrder, Set};
 use serenity::all::{Colour, Context, CreateEmbed, CreateMessage, Message, Timestamp};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -93,14 +96,13 @@ impl PremiumCog {
 
     /// Resolve a user's current premium tier as a raw level (0-3).
     async fn user_premium_level(&self, user_id: u64) -> u8 {
-        let level: Option<(i64,)> =
-            sqlx::query_as("SELECT patron_level FROM settings_users WHERE user_id = ?")
-                .bind(user_id as i64)
-                .fetch_optional(self.state.users_db())
-                .await
-                .ok()
-                .flatten();
-        PremiumLevel::from_level(level.map(|(l,)| l).unwrap_or(0)).as_u8()
+        let level = settings_users::Entity::find_by_id(user_id as i64)
+            .one(self.state.users_orm())
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.patron_level);
+        PremiumLevel::from_level(level.unwrap_or(0)).as_u8()
     }
 
     // ---- commands --------------------------------------------------------
@@ -130,19 +132,18 @@ impl PremiumCog {
             return;
         }
 
-        let row: Option<(i64, i64)> =
-            sqlx::query_as("SELECT level, redeemed FROM premium_tokens WHERE token = ?")
-                .bind(token)
-                .fetch_optional(self.state.users_db())
-                .await
-                .ok()
-                .flatten();
+        let row = premium_tokens::Entity::find_by_id(token)
+            .one(self.state.users_orm())
+            .await
+            .ok()
+            .flatten();
 
-        let Some((level, redeemed)) = row else {
+        let Some(m) = row else {
             self.reply_error(ctx, msg, "That token is invalid.").await;
             return;
         };
-        if redeemed != 0 {
+        let level = m.level;
+        if m.redeemed {
             self.reply_error(ctx, msg, "That token has already been redeemed.")
                 .await;
             return;
@@ -151,12 +152,14 @@ impl PremiumCog {
         let user_id = msg.author.id.get() as i64;
 
         // Burn the token, recording the redeemer as its owner.
-        if let Err(e) =
-            sqlx::query("UPDATE premium_tokens SET redeemed = 1, owner_id = ? WHERE token = ?")
-                .bind(user_id)
-                .bind(token)
-                .execute(self.state.users_db())
-                .await
+        if let Err(e) = (premium_tokens::ActiveModel {
+            token: Set(token.to_string()),
+            redeemed: Set(true),
+            owner_id: Set(Some(user_id)),
+            ..Default::default()
+        })
+        .update(self.state.users_orm())
+        .await
         {
             tracing::error!(error = ?e, "failed to redeem premium token");
             self.reply_error(ctx, msg, "Failed to redeem that token. Try again later.")
@@ -165,13 +168,17 @@ impl PremiumCog {
         }
 
         // Apply the token's tier to the user.
-        let _ = sqlx::query(
-            "INSERT INTO settings_users (user_id, patron_level) VALUES (?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET patron_level = excluded.patron_level",
+        let _ = settings_users::Entity::insert(settings_users::ActiveModel {
+            user_id: Set(user_id),
+            patron_level: Set(level),
+            ..Default::default()
+        })
+        .on_conflict(
+            OnConflict::column(settings_users::Column::UserId)
+                .update_columns([settings_users::Column::PatronLevel])
+                .to_owned(),
         )
-        .bind(user_id)
-        .bind(level)
-        .execute(self.state.users_db())
+        .exec(self.state.users_orm())
         .await;
 
         let tier = PremiumLevel::from_level(level);
@@ -211,12 +218,13 @@ impl PremiumCog {
         };
 
         let token = Uuid::new_v4().to_string();
-        if let Err(e) = sqlx::query(
-            "INSERT INTO premium_tokens (token, level, redeemed, owner_id) VALUES (?, ?, 0, NULL)",
-        )
-        .bind(&token)
-        .bind(level)
-        .execute(self.state.users_db())
+        if let Err(e) = premium_tokens::Entity::insert(premium_tokens::ActiveModel {
+            token: Set(token.clone()),
+            level: Set(level),
+            redeemed: Set(false),
+            owner_id: Set(None),
+        })
+        .exec(self.state.users_orm())
         .await
         {
             tracing::error!(error = ?e, "failed to insert premium token");
@@ -270,12 +278,12 @@ impl PremiumCog {
             return;
         }
 
-        let rows: Vec<(String, i64, i64, Option<i64>)> = sqlx::query_as(
-            "SELECT token, level, redeemed, owner_id FROM premium_tokens ORDER BY redeemed ASC, token ASC",
-        )
-        .fetch_all(self.state.users_db())
-        .await
-        .unwrap_or_default();
+        let rows = premium_tokens::Entity::find()
+            .order_by(premium_tokens::Column::Redeemed, Order::Asc)
+            .order_by(premium_tokens::Column::Token, Order::Asc)
+            .all(self.state.users_orm())
+            .await
+            .unwrap_or_default();
 
         if rows.is_empty() {
             self.reply_error(ctx, msg, "No premium tokens have been generated yet.")
@@ -285,16 +293,16 @@ impl PremiumCog {
 
         let mut outstanding: Vec<String> = Vec::new();
         let mut redeemed: Vec<String> = Vec::new();
-        for (token, level, is_redeemed, owner) in &rows {
-            let tier = PremiumLevel::from_level(*level);
-            if *is_redeemed == 0 {
-                outstanding.push(format!("`{}` \u{2014} **{}**", token, tier.name()));
+        for row in &rows {
+            let tier = PremiumLevel::from_level(row.level);
+            if !row.redeemed {
+                outstanding.push(format!("`{}` \u{2014} **{}**", row.token, tier.name()));
             } else {
                 redeemed.push(format!(
                     "`{}` \u{2014} **{}** \u{2192} <@{}>",
-                    token,
+                    row.token,
                     tier.name(),
-                    owner.unwrap_or(0)
+                    row.owner_id.unwrap_or(0)
                 ));
             }
         }
