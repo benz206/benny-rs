@@ -52,13 +52,6 @@ struct Definition {
     definition: String,
     #[serde(default)]
     example: Option<String>,
-    // Parsed for fidelity with the Python `Definition`; not rendered.
-    #[serde(default)]
-    #[allow(dead_code)]
-    synonyms: Vec<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    antonyms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -67,13 +60,6 @@ struct Meaning {
     part_of_speech: String,
     #[serde(default)]
     definitions: Vec<Definition>,
-    // Parsed for fidelity with the Python `Meaning`; not rendered.
-    #[serde(default)]
-    #[allow(dead_code)]
-    synonyms: Vec<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    antonyms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -86,10 +72,6 @@ struct Word {
     meanings: Vec<Meaning>,
     #[serde(default)]
     license: License,
-    // Parsed for fidelity with the Python `Word`; not rendered.
-    #[serde(default)]
-    #[allow(dead_code)]
-    sources: Vec<String>,
 }
 
 impl Word {
