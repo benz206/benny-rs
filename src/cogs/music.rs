@@ -28,6 +28,10 @@ use lavalink_rs::player_context::{PlayerContext, TrackInQueue};
 /// Per-player user data: where to announce "now playing", and an http handle to do it.
 type PlayerData = (ChannelId, Arc<Http>);
 
+/// Upper bound on queued tracks per guild, so repeated large-playlist loads
+/// can't grow the in-memory queue without limit.
+const MAX_QUEUE: usize = 500;
+
 // ===========================================================================
 // Errors (port of bot/gears/music_exceptions.py + DESIGN 7.4 MusicError)
 // ===========================================================================
@@ -37,6 +41,8 @@ enum MusicError {
     NothingPlaying,
     NotConnected,
     NotInVoice,
+    DifferentVoice,
+    QueueFull,
     TrackNotFound,
     NotReady,
     Failed(String),
@@ -49,6 +55,10 @@ impl MusicError {
             MusicError::NothingPlaying => "Nothing is playing right now.".to_string(),
             MusicError::NotConnected => "I'm not connected to a voice channel.".to_string(),
             MusicError::NotInVoice => "You need to be in a voice channel to use that.".to_string(),
+            MusicError::DifferentVoice => {
+                "You need to be in my voice channel to use that.".to_string()
+            }
+            MusicError::QueueFull => "The queue is full.".to_string(),
             MusicError::TrackNotFound => "No tracks found for that query.".to_string(),
             MusicError::NotReady => {
                 "The music system isn't ready yet. Try again in a moment.".to_string()
@@ -214,6 +224,55 @@ impl MusicCog {
             .and_then(|vs| vs.channel_id)
     }
 
+    /// Require the invoker to share the bot's voice channel before letting them
+    /// drive playback (skip/stop/pause/disconnect/volume) — otherwise any member
+    /// who can type could control or kick the bot from a channel they're not in.
+    fn require_same_voice(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+        user_id: UserId,
+    ) -> Result<(), MusicError> {
+        let bot_id = ctx.cache.current_user().id;
+        let bot_vc =
+            Self::user_voice_channel(ctx, guild_id, bot_id).ok_or(MusicError::NotConnected)?;
+        match Self::user_voice_channel(ctx, guild_id, user_id) {
+            Some(vc) if vc == bot_vc => Ok(()),
+            _ => Err(MusicError::DifferentVoice),
+        }
+    }
+
+    /// Whether a raw URL may be handed to Lavalink to load. Lavalink fetches
+    /// URLs server-side, so an unrestricted URL is an SSRF vector (internal
+    /// hosts, link-local metadata, etc.); only known media hosts are allowed.
+    fn is_allowed_media_url(url: &str) -> bool {
+        let Ok(parsed) = reqwest::Url::parse(url) else {
+            return false;
+        };
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return false;
+        }
+        let Some(host) = parsed.host_str() else {
+            return false;
+        };
+        let host = host.to_ascii_lowercase();
+        const ALLOWED: &[&str] = &[
+            "youtube.com",
+            "youtu.be",
+            "soundcloud.com",
+            "spotify.com",
+            "bandcamp.com",
+            "twitch.tv",
+            "vimeo.com",
+            "deezer.com",
+            "music.apple.com",
+            "nicovideo.jp",
+        ];
+        ALLOWED
+            .iter()
+            .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+    }
+
     /// Send a raw gateway voice-state-update (opcode 4). `channel` = None leaves.
     fn send_voice_state(ctx: &Context, guild_id: GuildId, channel: Option<ChannelId>) {
         let payload = serde_json::json!({
@@ -295,9 +354,12 @@ impl MusicCog {
             return;
         };
 
-        // URLs (incl. Spotify, which requires the LavaSrc plugin server-side) are
-        // passed through verbatim; bare terms use the configured search source.
-        let query = if query.starts_with("http://") || query.starts_with("https://") {
+        // URLs from known media hosts (incl. Spotify, via the LavaSrc plugin) are
+        // passed through verbatim; anything else — bare terms, and crucially any
+        // non-allowlisted URL — goes through the search source so Lavalink never
+        // fetches an arbitrary URL server-side (SSRF).
+        let is_url = query.starts_with("http://") || query.starts_with("https://");
+        let query = if is_url && Self::is_allowed_media_url(query) {
             query.to_string()
         } else {
             format!("{}:{}", self.state.config.lavalink.search_source, query)
@@ -349,6 +411,14 @@ impl MusicCog {
         let first = tracks[0].track.info.clone();
 
         let queue = player.get_queue();
+        // Bound the in-memory queue so repeated large-playlist loads can't grow
+        // it without limit and exhaust memory.
+        let current = queue.get_count().await.unwrap_or(0);
+        if current + added > MAX_QUEUE {
+            self.send_error(ctx, msg.channel_id, MusicError::QueueFull)
+                .await;
+            return;
+        }
         if let Err(e) = queue.append(tracks.into()) {
             self.send_error(
                 ctx,
@@ -376,6 +446,10 @@ impl MusicCog {
     }
 
     async fn cmd_disconnect(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
+        if let Err(e) = self.require_same_voice(ctx, guild_id, msg.author.id) {
+            self.send_error(ctx, msg.channel_id, e).await;
+            return;
+        }
         let Some(lava) = self.lava() else {
             self.send_error(ctx, msg.channel_id, MusicError::NotReady)
                 .await;
@@ -398,6 +472,10 @@ impl MusicCog {
     }
 
     async fn cmd_pause(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
+        if let Err(e) = self.require_same_voice(ctx, guild_id, msg.author.id) {
+            self.send_error(ctx, msg.channel_id, e).await;
+            return;
+        }
         let player = match self.player_ctx(guild_id) {
             Ok(p) => p,
             Err(e) => return self.send_error(ctx, msg.channel_id, e).await,
@@ -416,6 +494,10 @@ impl MusicCog {
     }
 
     async fn cmd_resume(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
+        if let Err(e) = self.require_same_voice(ctx, guild_id, msg.author.id) {
+            self.send_error(ctx, msg.channel_id, e).await;
+            return;
+        }
         let player = match self.player_ctx(guild_id) {
             Ok(p) => p,
             Err(e) => return self.send_error(ctx, msg.channel_id, e).await,
@@ -434,6 +516,10 @@ impl MusicCog {
     }
 
     async fn cmd_skip(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
+        if let Err(e) = self.require_same_voice(ctx, guild_id, msg.author.id) {
+            self.send_error(ctx, msg.channel_id, e).await;
+            return;
+        }
         let player = match self.player_ctx(guild_id) {
             Ok(p) => p,
             Err(e) => return self.send_error(ctx, msg.channel_id, e).await,
@@ -463,6 +549,10 @@ impl MusicCog {
     }
 
     async fn cmd_stop(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
+        if let Err(e) = self.require_same_voice(ctx, guild_id, msg.author.id) {
+            self.send_error(ctx, msg.channel_id, e).await;
+            return;
+        }
         let player = match self.player_ctx(guild_id) {
             Ok(p) => p,
             Err(e) => return self.send_error(ctx, msg.channel_id, e).await,
@@ -479,6 +569,10 @@ impl MusicCog {
     }
 
     async fn cmd_volume(&self, ctx: &Context, msg: &Message, guild_id: GuildId, args: &str) {
+        if let Err(e) = self.require_same_voice(ctx, guild_id, msg.author.id) {
+            self.send_error(ctx, msg.channel_id, e).await;
+            return;
+        }
         let volume: u16 = match args.trim().parse() {
             Ok(v) if (1..=100).contains(&v) => v,
             _ => {
