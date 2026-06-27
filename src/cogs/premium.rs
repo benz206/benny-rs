@@ -4,8 +4,8 @@ use crate::state::AppState;
 use crate::utils::embeds::error_embed;
 use crate::utils::format;
 use async_trait::async_trait;
-use sea_orm::sea_query::OnConflict;
-use sea_orm::{ActiveModelTrait, EntityTrait, Order, QueryOrder, Set};
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{ColumnTrait, EntityTrait, Order, QueryFilter, QueryOrder, Set};
 use serenity::all::{Colour, Context, CreateEmbed, CreateMessage, Message, Timestamp};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -151,26 +151,44 @@ impl PremiumCog {
 
         let user_id = msg.author.id.get() as i64;
 
-        // Burn the token, recording the redeemer as its owner.
-        if let Err(e) = (premium_tokens::ActiveModel {
-            token: Set(token.to_string()),
-            redeemed: Set(true),
-            owner_id: Set(Some(user_id)),
-            ..Default::default()
-        })
-        .update(self.state.users_orm())
-        .await
-        {
-            tracing::error!(error = ?e, "failed to redeem premium token");
-            self.reply_error(ctx, msg, "Failed to redeem that token. Try again later.")
-                .await;
-            return;
+        // Burn the token atomically: the UPDATE only matches while redeemed is
+        // still false, so of two concurrent redemptions exactly one affects a
+        // row — a token can never be redeemed twice via a check-then-act race.
+        let burn = premium_tokens::Entity::update_many()
+            .col_expr(premium_tokens::Column::Redeemed, Expr::value(true))
+            .col_expr(premium_tokens::Column::OwnerId, Expr::value(user_id))
+            .filter(premium_tokens::Column::Token.eq(token))
+            .filter(premium_tokens::Column::Redeemed.eq(false))
+            .exec(self.state.users_orm())
+            .await;
+        match burn {
+            Ok(res) if res.rows_affected == 1 => {}
+            Ok(_) => {
+                self.reply_error(ctx, msg, "That token has already been redeemed.")
+                    .await;
+                return;
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, "failed to redeem premium token");
+                self.reply_error(ctx, msg, "Failed to redeem that token. Try again later.")
+                    .await;
+                return;
+            }
         }
 
-        // Apply the token's tier to the user.
+        // Apply the token's tier, but never downgrade a user who already holds a
+        // higher tier (e.g. redeeming a Basic token after a Max one).
+        let existing = settings_users::Entity::find_by_id(user_id)
+            .one(self.state.users_orm())
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.patron_level)
+            .unwrap_or(0);
+        let new_level = level.max(existing);
         let _ = settings_users::Entity::insert(settings_users::ActiveModel {
             user_id: Set(user_id),
-            patron_level: Set(level),
+            patron_level: Set(new_level),
             ..Default::default()
         })
         .on_conflict(
