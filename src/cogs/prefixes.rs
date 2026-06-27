@@ -12,15 +12,11 @@ use serenity::all::{
 use std::sync::Arc;
 
 /// Maximum number of custom prefixes a guild may have.
-///
-/// DESIGN.md (7.9) mandates 5 for the Rust rewrite. The original Python
-/// `settings.py` allowed 15; we follow the Rust spec.
 const MAX_PREFIXES: usize = 5;
-/// Maximum length of a single prefix (Python `sanitize_prefix` truncated to 25;
-/// here we reject anything longer, per the porting task).
+/// Maximum length of a single prefix; values over this limit are rejected.
 const MAX_PREFIX_LEN: usize = 25;
-/// Legacy `:|:` separator the Python implementation used to join prefixes in a
-/// single column. Disallowed as a prefix so it can never corrupt storage.
+/// Separator previously used to join multiple prefixes in a single DB column.
+/// Disallowed as a prefix so it can never corrupt storage.
 const LEGACY_SEP: &str = ":|:";
 
 pub struct PrefixesCog {
@@ -32,9 +28,8 @@ impl PrefixesCog {
         Arc::new(Self { state })
     }
 
-    /// Sanitize a prefix the way Python's `sanitize_prefix` did (strip ends,
-    /// reject the `:|:` separator) plus the limits the task requires (non-empty,
-    /// max length). Inner spaces are allowed.
+    /// Sanitize a raw prefix: strip leading/trailing whitespace, reject the `:|:`
+    /// separator, enforce non-empty and max length. Inner spaces are allowed.
     fn sanitize_prefix(raw: &str) -> Result<String, String> {
         if raw.contains(LEGACY_SEP) {
             return Err("Why do you have `:|:` as a prefix...".to_string());
@@ -87,7 +82,7 @@ impl Cog for PrefixesCog {
                 .push(m.prefix);
             count += 1;
         }
-        // Keep each guild's prefixes sorted by length (matches Python).
+        // Keep each guild's prefixes sorted by length.
         for mut entry in self.state.prefix_cache.iter_mut() {
             entry.value_mut().sort_by_key(|p| p.len());
         }
@@ -147,8 +142,7 @@ impl Cog for PrefixesCog {
             return;
         }
         let body = content[prefix.len()..].trim();
-        // splitn(3): keep the remainder intact so multi-word prefixes work
-        // (Python used a greedy `*, prefix: str`).
+        // splitn(3): keep the remainder intact so multi-word prefixes work.
         let mut it = body.splitn(3, ' ');
         let Some(cmd) = it.next() else { return };
         if cmd != "prefix" {

@@ -146,8 +146,7 @@ impl ModerationCog {
         allowed
     }
 
-    /// Reject self-targeting and bot-targeting. Reserves mod.py's exact ban
-    /// quips for the ban action. Returns an error string when blocked.
+    /// Reject self-targeting and bot-targeting. Returns an error string when blocked.
     fn self_guard(
         &self,
         ctx: &Context,

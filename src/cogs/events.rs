@@ -14,9 +14,8 @@ use tracing::{info, warn};
 /// Bot lifecycle / internals cog: auto-leave policy, thread auto-join,
 /// command logging, and guild join/remove logging.
 ///
-/// Port of `bot/cogs/events.py`. The 15s gateway-latency loop that events.py
-/// runs (`ping_loop`) lives in `state::start_latency_task` (spawned from
-/// `main.rs`) and is intentionally NOT duplicated here.
+/// The 15s gateway-latency loop lives in `state::start_latency_task` (spawned
+/// from `main.rs`) and is intentionally NOT duplicated here.
 pub struct EventsCog {
     state: Arc<AppState>,
     /// Set true the first time `on_ready` fires. Until then we cannot tell a
@@ -41,9 +40,8 @@ impl EventsCog {
         })
     }
 
-    /// True if any configured bot owner is a member of `guild`. Mirrors
-    /// events.py's hardcoded owner-presence bypass (`get_member` then
-    /// `fetch_member`): trusted/owner servers are exempt from the policy.
+    /// True if any configured bot owner is a member of `guild`:
+    /// trusted/owner servers are exempt from the auto-leave policy.
     async fn owner_present(&self, ctx: &Context, guild: &Guild) -> bool {
         for &owner in &self.state.config.owners {
             let uid = UserId::new(owner);
@@ -161,9 +159,7 @@ impl Cog for EventsCog {
             return; // no members loaded — cannot evaluate the policy
         }
 
-        // Auto-leave policy (DESIGN 7.17): leave if >20% of members are bots OR
-        // there are fewer than 5 humans. (events.py ANDs these two conditions;
-        // the design spec and this task specify OR — see report.)
+        // Auto-leave policy: leave if >20% of members are bots OR fewer than 5 humans.
         if pct > 20.0 || humans < 5 {
             self.notify_and_leave(ctx, guild, bots, humans, total, pct)
                 .await;
@@ -234,7 +230,7 @@ impl Cog for EventsCog {
 }
 
 /// Compute `(bots, humans, total, bot_percentage)` from a guild's loaded
-/// members. Percentage matches events.py: `trunc((bots/total)*10000)/100`
+/// members. Percentage is `trunc((bots/total)*10000)/100`
 /// (two-decimal precision), and is 0.0 when no members are loaded.
 fn bot_ratio(guild: &Guild) -> (usize, usize, usize, f64) {
     let total = guild.members.len();

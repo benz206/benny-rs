@@ -12,9 +12,9 @@ mod cogs;
 mod config;
 mod db_mongo;
 mod entities;
-mod migrations;
 mod error;
 mod http;
+mod migrations;
 mod slash;
 mod state;
 mod tagscript;
@@ -74,8 +74,10 @@ async fn main() -> Result<()> {
     // db.rs). Each migrator runs against the SeaORM connection that shares the
     // corresponding sqlx pool.
     use sea_orm_migration::MigratorTrait;
-    migrations::ServersMigrator::up(&sea_orm::DatabaseConnection::from(servers_db.clone()), None).await?;
-    migrations::UsersMigrator::up(&sea_orm::DatabaseConnection::from(users_db.clone()), None).await?;
+    migrations::ServersMigrator::up(&sea_orm::DatabaseConnection::from(servers_db.clone()), None)
+        .await?;
+    migrations::UsersMigrator::up(&sea_orm::DatabaseConnection::from(users_db.clone()), None)
+        .await?;
 
     // Connect MongoDB (optional - warn if unavailable)
     let mongo = match mongodb::Client::with_uri_str(&config.mongodb_uri).await {

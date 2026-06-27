@@ -22,8 +22,7 @@ const MAX_REMINDERS: i64 = 10;
 const MAX_CONTENT_LEN: usize = 1000;
 
 /// Preset durations (seconds, human label) offered by the interactive dropdown
-/// when `remind` is called without a parseable time. Mirrors reminders.py's
-/// `ReminderTimeDropdown`.
+/// when `remind` is called without a parseable time.
 const PRESETS: [(i64, &str); 17] = [
     (60, "1 minute"),
     (300, "5 minutes"),
@@ -129,7 +128,7 @@ impl Cog for RemindersCog {
                         }
                     }
                 }
-                // Acknowledge silently (deferred update), like view.defer() in py.
+                // Acknowledge silently (deferred update).
                 let _ = interaction
                     .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
                     .await;
@@ -276,7 +275,7 @@ impl RemindersCog {
             return;
         };
 
-        // Faithful to reminders.py: the reminder belongs to whoever confirms.
+        // The reminder belongs to whoever confirms.
         let user_id = interaction.user.id.get() as i64;
         let response = match self.insert_reminder(user_id, &pending.content, ts).await {
             Ok(id) => CreateInteractionResponse::UpdateMessage(

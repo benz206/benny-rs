@@ -77,8 +77,7 @@ impl TranslateCog {
         Some((detected, translated))
     }
 
-    /// Build the summary embed shown alongside the toggle buttons, mirroring the
-    /// Python `translate_cmd` embed (two fields, pink, timestamped).
+    /// Build the summary embed shown alongside the toggle buttons (two fields, pink, timestamped).
     fn build_embed(src: &str, dest: &str, origin: &str, translated: &str) -> CreateEmbed {
         CreateEmbed::new()
             .title("Translating Text")
@@ -96,7 +95,7 @@ impl TranslateCog {
             )
     }
 
-    /// The "Original" / "Translated" toggle row (Python `TranslateView`).
+    /// The "Original" / "Translated" toggle row.
     fn buttons() -> CreateActionRow {
         CreateActionRow::Buttons(vec![
             CreateButton::new(ORIGINAL_ID)
@@ -110,7 +109,7 @@ impl TranslateCog {
 
     /// Translate a message's content and reply to an application-command
     /// interaction (used by the "Translate" message context menu in slash.rs).
-    /// Defaults the target language to English, matching the Python context menu.
+    /// Defaults the target language to English.
     pub async fn handle_context_menu(&self, ctx: &Context, interaction: &CommandInteraction) {
         let content = match interaction.data.target() {
             Some(ResolvedTarget::Message(m)) => m.content.clone(),
@@ -322,8 +321,7 @@ fn non_empty(s: &str) -> String {
     }
 }
 
-/// Capitalize like Python's `str.capitalize`: first char upper, rest unchanged
-/// (names below are already lowercase, matching googletrans output).
+/// First char upper, rest unchanged (names below are already lowercase).
 fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -332,8 +330,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Map a language code to a human-readable name, mirroring
-/// `aiogtrans.LANGUAGES` (the googletrans table). Unknown codes fall back to
+/// Map a language code to a human-readable name. Unknown codes fall back to
 /// the capitalized code itself.
 fn language_name(code: &str) -> String {
     let lc = code.to_ascii_lowercase();

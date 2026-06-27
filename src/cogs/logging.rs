@@ -50,7 +50,7 @@ impl LoggingCog {
 
     /// Build a single color-coded, timestamped embed from `fields` and dispatch
     /// it to the guild webhook. Every logged event funnels through here so they
-    /// all carry a timestamp (DESIGN 7.13).
+    /// all carry a timestamp.
     async fn log_event(
         &self,
         guild_id: u64,

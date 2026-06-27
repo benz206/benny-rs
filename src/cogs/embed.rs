@@ -9,9 +9,9 @@ use serenity::all::{
     ActionRowComponent, ButtonStyle, Channel, ChannelId, ChannelType, Colour, ComponentInteraction,
     ComponentInteractionDataKind, Context, CreateActionRow, CreateAttachment, CreateButton,
     CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage, CreateModal,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, GuildId, InputTextStyle,
-    Message, ModalInteraction, Permissions, Timestamp, UserId,
+    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
+    CreateModal, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, GuildId,
+    InputTextStyle, Message, ModalInteraction, Permissions, Timestamp, UserId,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -98,8 +98,7 @@ fn jstr(v: &Value, key: &str) -> Option<String> {
 }
 
 impl EmbedData {
-    /// The default starter embed, mirroring the Python `custom_embed` command
-    /// (title "Embed Creator", a hint description, current timestamp).
+    /// The default starter embed (title "Embed Creator", a hint description, current timestamp).
     fn starter() -> Self {
         Self {
             title: Some("Embed Creator".to_string()),
@@ -289,7 +288,7 @@ impl EmbedData {
 }
 
 /// An interactive builder session, keyed by the builder message id. `owner_id`
-/// enforces the Python `interaction_check` (only the invoker may drive it).
+/// enforces that only the invoker may drive it.
 struct Builder {
     data: EmbedData,
     owner_id: u64,
@@ -907,7 +906,7 @@ impl EmbedCog {
     // ---- import / export over Mystbin -------------------------------------
 
     /// Parse an import payload: a raw JSON string, or a `https://mystb.in/<id>`
-    /// link whose paste content is JSON. Mirrors the Python import modal.
+    /// link whose paste content is JSON.
     async fn parse_import(&self, input: &str) -> Result<EmbedData, String> {
         let input = input.trim();
         let raw = if let Some(rest) = input
@@ -930,7 +929,7 @@ impl EmbedCog {
         Ok(EmbedData::from_json(&value))
     }
 
-    /// Upload text to mystb.in, returning the paste link (mirrors ocr.rs).
+    /// Upload text to mystb.in, returning the paste link.
     async fn upload_to_mystbin(&self, text: &str) -> Option<String> {
         let body = json!({ "files": [{ "content": text, "filename": "custom_embed.json" }] });
         let resp = self

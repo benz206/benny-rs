@@ -67,7 +67,7 @@ impl Cog for InfoCog {
         }
         if interaction.data.custom_id == AVATAR_DELETE_ID {
             // Acknowledge so Discord does not show "interaction failed", then
-            // remove the avatar card. Mirrors avatar.py's AvatarView delete.
+            // remove the avatar card.
             let _ = interaction
                 .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
                 .await;
@@ -290,8 +290,7 @@ impl InfoCog {
         self.reply_embed(ctx, msg, embed).await;
     }
 
-    /// `avatar [member]` (av/pfp): avatar card with a delete button, mirroring
-    /// avatar.py's AvatarView.
+    /// `avatar [member]` (av/pfp): avatar card with a delete button.
     async fn cmd_avatar(&self, ctx: &Context, msg: &Message, guild_id: GuildId, arg: &str) {
         let Some(target_id) = self
             .resolve_member_id(ctx, guild_id, arg, msg.author.id.get())

@@ -172,7 +172,7 @@ impl DevCog {
     // ---- commands ---------------------------------------------------------
 
     /// `dev system` / `dev sysinfo` (also `sys`): a system overview embed with a
-    /// SystemView button bar to page through Info / CPU / RAM, mirroring dev.py.
+    /// SystemView button bar to page through Info / CPU / RAM.
     async fn cmd_system(&self, ctx: &Context, msg: &Message) {
         let embed = base_system_embed().await;
         let _ = msg
@@ -192,8 +192,7 @@ impl DevCog {
         self.reply_embed(ctx, msg, git_embed(&raw)).await;
     }
 
-    /// `dev sync`: in dev.py this pulls and hot-reloads every cog. Rust cogs are
-    /// static, so we pull and explain that reload requires a restart.
+    /// `dev sync`: Rust cogs are static, so we pull and explain that reload requires a restart.
     async fn cmd_sync(&self, ctx: &Context, msg: &Message) {
         let raw = run_git_pull();
         self.reply_embed(ctx, msg, git_embed(&raw)).await;
@@ -560,7 +559,7 @@ fn truncate_str(s: &str, max: usize) -> String {
     format!("{}\u{2026}", &s[..end])
 }
 
-/// Human-readable byte size (mirrors dev.py's `get_size`: 1024 factor, B/KB/...).
+/// Human-readable byte size (1024 factor, B/KB/...).
 fn human_bytes(bytes: u64) -> String {
     let mut b = bytes as f64;
     for unit in ["", "K", "M", "G", "T", "P"] {
@@ -597,8 +596,7 @@ fn run_git_pull() -> String {
     }
 }
 
-/// Light ANSI colourisation of git output (mirrors the spirit of dev.py's
-/// `format_git_msg`): highlight the fast-forward / update / summary lines.
+/// Light ANSI colourisation of git output: highlight the fast-forward / update / summary lines.
 fn format_git_msg(content: &str) -> String {
     content
         .lines()

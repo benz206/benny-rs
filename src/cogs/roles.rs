@@ -20,9 +20,7 @@ use tokio::time::{Duration, sleep};
 /// Component custom_id namespace for this cog. `on_component` early-returns on
 /// anything that does not begin with this.
 const CID_PREFIX: &str = "role:";
-/// Delay between bulk role API calls (DESIGN 7.16: "0.5s sleep between API
-/// calls"). The Python `RoleAllView`/`RoleRallView` sleeps 1s; benny-rs follows
-/// the spec value.
+/// Delay between bulk role API calls (0.5 s).
 const BULK_DELAY_MS: u64 = 500;
 /// Edit the progress message every N members during a bulk apply.
 const PROGRESS_EVERY: usize = 10;
@@ -61,8 +59,7 @@ impl BulkAction {
 }
 
 /// A bulk role operation awaiting Start/Cancel, keyed in `pending` by the
-/// confirmation message id. Mirrors the `members`/`role` captured by Python's
-/// `RoleAllView`.
+/// confirmation message id.
 struct PendingRoleAll {
     guild_id: u64,
     role_id: u64,
@@ -140,7 +137,6 @@ impl Cog for RolesCog {
                     "add" => self.cmd_role_add(ctx, msg, guild_id, sub_rest).await,
                     "remove" => self.cmd_role_remove(ctx, msg, guild_id, sub_rest).await,
                     "custom" | "c" => self.cmd_role_custom(ctx, msg, guild_id, sub_rest).await,
-                    // `role all`/`role bulk <role>` mirror base.py's `role all`.
                     "all" | "bulk" => {
                         let (action, role_token) = parse_bulk_args(sub_rest);
                         self.cmd_roleall(ctx, msg, guild_id, action, role_token)
@@ -198,7 +194,6 @@ impl Cog for RolesCog {
         match action {
             "cancel" => {
                 self.pending.remove(&message_id);
-                // Faithful to RoleAllView/RoleRallView: the prompt is deleted.
                 let _ = interaction
                     .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
                     .await;
@@ -273,7 +268,7 @@ impl RolesCog {
     }
 
     /// Effective guild permissions of `user_id`, preferring the cached guild and
-    /// falling back to a partial-guild fetch (mirrors ModerationCog).
+    /// falling back to a partial-guild fetch.
     async fn invoker_perms(
         &self,
         ctx: &Context,
@@ -526,7 +521,7 @@ impl RolesCog {
     }
 
     /// `role custom <member> <+role|-role|!role ...>`: `+` adds, `-` removes, `!`
-    /// toggles per current membership. Replicates base.py's `role_custom_command`.
+    /// toggles per current membership.
     async fn cmd_role_custom(&self, ctx: &Context, msg: &Message, guild_id: GuildId, rest: &str) {
         if !self
             .require_perms(
@@ -574,7 +569,7 @@ impl RolesCog {
         let mut remove: Vec<RoleId> = Vec::new();
         for token in role_str.split_whitespace() {
             let sigil = token.chars().next();
-            // Tokens without a +/-/! sigil are ignored, like base.py.
+            // Tokens without a +/-/! sigil are ignored.
             if !matches!(sigil, Some('+') | Some('-') | Some('!')) {
                 continue;
             }
@@ -679,8 +674,7 @@ impl RolesCog {
                 .await;
         }
 
-        // Colour/footer come from the last touched role (remove wins over add),
-        // matching the trailing `role` binding in base.py.
+        // Colour/footer come from the last touched role (remove wins over add).
         let last = remove.last().or_else(|| add.last()).copied();
         let colour = last
             .and_then(|rid| roles.get(&rid))
@@ -763,7 +757,6 @@ impl RolesCog {
         action: BulkAction,
         role_token: &str,
     ) {
-        // DESIGN 7.16: requires Manage Roles + Manage Guild.
         if !self
             .require_perms(
                 ctx,

@@ -13,15 +13,13 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use std::{fs, path::PathBuf};
 
-/// GitHub repo the commit links point at (the Python original linked at
-/// `Leg3ndary/Benny`; the Rust port lives here).
 const REPO_URL: &str = "https://github.com/benz206/benny-rs";
 
-/// Shared note pinned to the ping embed footer (mirrors base.py).
+/// Shared note pinned to the ping embed footer.
 const PING_NOTE: &str = "Please note that this will be much slower when you use slash commands";
 
-/// Cached source-tree statistics (DESIGN §8 "File Stats"): computed once by
-/// walking `src/` on the first `about`/`files` invocation.
+/// Cached source-tree statistics: computed once by walking `src/` on the first
+/// `about`/`files` invocation.
 struct FileStats {
     files: u64,
     lines: u64,
@@ -105,7 +103,7 @@ impl BaseCog {
         let Ok(mut sent) = sent else { return };
         let rest = start.elapsed().as_secs_f64();
 
-        // Color tiers mirror base.py (seconds): >=3 red, >=2 orange, >=1 yellow.
+        // Color tiers (seconds): >=3 red, >=2 orange, >=1 yellow.
         let color = if rest >= 3.0 {
             colors::RED
         } else if rest >= 2.0 {
@@ -231,7 +229,7 @@ impl BaseCog {
     async fn cmd_files(&self, ctx: &Context, msg: &Message) {
         let s = self.stats();
 
-        // Build base.py's per-file JSON dump (path -> line count).
+        // Build the per-file JSON dump (path -> line count).
         let mut body = String::from("{\n");
         for (i, (path, lines)) in s.per_file.iter().enumerate() {
             let comma = if i + 1 < s.per_file.len() { "," } else { "" };

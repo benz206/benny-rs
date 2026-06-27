@@ -13,10 +13,9 @@ use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serde_json::Value;
 use serenity::all::{
     ButtonStyle, ChannelId, Colour, ComponentInteraction, Context, CreateActionRow,
-    CreateAllowedMentions, CreateButton,
-    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, GuildId, Member, Message, Permissions, RoleId,
-    Timestamp, User, UserId,
+    CreateAllowedMentions, CreateButton, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, GuildId, Member,
+    Message, Permissions, RoleId, Timestamp, User, UserId,
 };
 use serenity::prelude::Mentionable;
 use std::collections::HashMap;
@@ -881,12 +880,9 @@ impl WelcomeCog {
             role_ids: Set(ids),
         })
         .on_conflict(
-            OnConflict::columns([
-                sticky_roles::Column::GuildId,
-                sticky_roles::Column::UserId,
-            ])
-            .update_column(sticky_roles::Column::RoleIds)
-            .to_owned(),
+            OnConflict::columns([sticky_roles::Column::GuildId, sticky_roles::Column::UserId])
+                .update_column(sticky_roles::Column::RoleIds)
+                .to_owned(),
         )
         .exec(self.state.servers_orm())
         .await;
@@ -1079,7 +1075,7 @@ fn render_str(s: &str, ctx: &mut TagContext) -> String {
 }
 
 /// Build a `CreateEmbed` from a stored embed JSON object, resolving TagScript
-/// in every string field (mirrors the Python `process_embed`).
+/// in every string field.
 fn render_stored_embed(json_str: &str, ctx: &mut TagContext) -> Option<CreateEmbed> {
     let v: Value = serde_json::from_str(json_str).ok()?;
     let mut embed = CreateEmbed::new();

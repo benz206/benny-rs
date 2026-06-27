@@ -10,15 +10,14 @@ use serenity::all::{Colour, Context, CreateEmbed, CreateMessage, Message, Timest
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Crown icon used across premium embeds (mirrors premium.py `ICON`).
+/// Crown icon used across premium embeds.
 const ICON: &str = "\u{1F451}";
 
-/// Aqua accent, mirrors premium.py's `style.Color.AQUA` (0x7FDBFF).
+/// Aqua accent (0x7FDBFF).
 const AQUA: Colour = Colour::from_rgb(127, 219, 255);
 
 /// Premium tiers. Backed by `settings_users.patron_level` (0-3) and
-/// `premium_tokens.level`. Mirrors the design's
-/// `PremiumLevel { None = 0, Basic = 1, Pro = 2, Max = 3 }`.
+/// `premium_tokens.level`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PremiumLevel {
     None = 0,

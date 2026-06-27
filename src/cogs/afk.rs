@@ -12,7 +12,6 @@ use serenity::all::{
 use std::sync::Arc;
 use std::time::Duration;
 
-// Exact colors from the Python bot (gears/style.py).
 const AQUA: Colour = Colour::from_rgb(0x7F, 0xDB, 0xFF); // 0x7FDBFF
 const PINK: Colour = Colour::from_rgb(0xF0, 0x12, 0xBE); // 0xF012BE
 
@@ -37,7 +36,10 @@ impl Cog for AfkCog {
         for m in rows {
             self.state.afk_cache.insert(
                 (m.guild_id as u64, m.user_id as u64),
-                AfkEntry { message: m.message, set_at: m.set_at },
+                AfkEntry {
+                    message: m.message,
+                    set_at: m.set_at,
+                },
             );
         }
         tracing::info!("AFK cache loaded ({} entries)", self.state.afk_cache.len());
@@ -53,7 +55,7 @@ impl Cog for AfkCog {
         };
         let now = Utc::now().timestamp();
 
-        // `afk [message]` command — set AFK (mirrors base.py afk_group → set_afk).
+        // `afk [message]` command — set AFK.
         let content = msg.content.trim();
         let prefix = self.state.prefix().to_string();
         if let Some(body) = content.strip_prefix(&prefix) {
@@ -65,7 +67,7 @@ impl Cog for AfkCog {
             }
         }
 
-        // Run on every non-bot message (mirrors base.py on_message → manage_afk).
+        // Run on every non-bot message.
         self.manage_afk(ctx, msg, guild_id, now).await;
     }
 }

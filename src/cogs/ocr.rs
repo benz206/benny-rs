@@ -32,7 +32,6 @@ impl OcrCog {
 
     /// Upload text to mystb.in, returning the paste link on success.
     ///
-    /// Mirrors the request the `mystbin` Python client makes in the original bot:
     /// `POST https://mystb.in/api/paste` with `{"files": [{"content", "filename"}]}`,
     /// responding with `{"id": ...}` → `https://mystb.in/{id}`.
     async fn upload_to_mystbin(&self, text: &str) -> Option<String> {

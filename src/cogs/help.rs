@@ -22,17 +22,14 @@ const COMMAND_SELECT_ID: &str = "help:command";
 /// Nav buttons are `help:nav:<prev|next>:<category-key>`.
 const NAV_PREFIX: &str = "help:nav:";
 
-/// style.Color.AQUA + the help cog's book icon, mirroring help.py's
-/// `Help.COLOR` / `Help.ICON`.
 const HELP_COLOR: u32 = 0x7FDBFF;
 const HELP_ICON: &str = "\u{1F4D8}"; // 📘
 
 // ---- static command table --------------------------------------------------
 //
 // There is no central command registry, so the help menu is driven by this
-// hand-maintained table. Categories mirror the cogs under `src/cogs/` (internal
-// Dev/Events cogs are excluded, exactly as help.py excludes them). Each category
-// carries an ICON + COLOR like the Python cogs do.
+// hand-maintained table. Categories correspond to the cogs under `src/cogs/`
+// (internal Dev/Events cogs are excluded). Each category carries an ICON + COLOR.
 
 struct CmdInfo {
     name: &'static str,
@@ -581,8 +578,7 @@ fn find_command(q: &str) -> Option<(&'static Category, &'static CmdInfo)> {
 pub struct HelpCog {
     state: Arc<AppState>,
     /// message id -> invoking user id. Restricts navigation to the invoker
-    /// (mirrors the Python views' implicit owner). A cache miss (restart /
-    /// eviction) degrades to allowing anyone, like the dictionary cog.
+    /// A cache miss (restart / eviction) degrades to allowing anyone.
     sessions: DashMap<u64, u64>,
 }
 
@@ -910,7 +906,7 @@ fn category_embed(cat: &Category, prefix: &str, name: &str, icon: &str) -> Creat
 }
 
 /// `help <command>` / command selection: the detailed command page, with an
-/// ANSI-coloured usage block mirroring help.py's `send_command_help`.
+/// ANSI-coloured usage block.
 fn command_embed(
     cat: &Category,
     cmd: &CmdInfo,

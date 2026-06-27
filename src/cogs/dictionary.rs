@@ -12,7 +12,6 @@ use serenity::all::{
 use std::sync::Arc;
 
 const API_URL: &str = "https://api.dictionaryapi.dev/api/v2/entries/en/";
-/// style.Color.MAROON in the Python bot.
 const MAROON: Colour = Colour::new(0x85144B);
 /// Component custom_id namespace for this cog.
 const SELECT_ID: &str = "dict:select";
@@ -75,8 +74,7 @@ struct Word {
 }
 
 impl Word {
-    /// The first phonetic audio link, if present and non-empty (mirrors the
-    /// Python `word.phonetics[0].audio if word.phonetics[0].audio else None`).
+    /// The first phonetic audio link, if present and non-empty.
     fn audio_url(&self) -> Option<&str> {
         self.phonetics
             .first()
@@ -94,8 +92,7 @@ impl Word {
 }
 
 /// A fetched word cached for the lifetime of its dropdown message, keyed by the
-/// bot's reply message id. `author_id` enforces the Python `interaction_check`
-/// (only the invoker may drive the dropdown).
+/// bot's reply message id. `author_id` restricts the dropdown to the invoker.
 struct CachedWord {
     word: Word,
     author_id: u64,
@@ -131,7 +128,7 @@ impl DictionaryCog {
     }
 
     /// The dropdown of meanings (`DictDropdown`): up to 25 options, label is the
-    /// part of speech, description is the first definition (truncated like Python).
+    /// part of speech, description is the first definition (truncated at 47 chars).
     fn build_select_menu(word: &Word) -> CreateActionRow {
         let options: Vec<CreateSelectMenuOption> = word
             .meanings
@@ -174,9 +171,8 @@ impl DictionaryCog {
         author
     }
 
-    /// The landing embed shown before any meaning is selected (Python
-    /// `define_cmd`): title, the "select below" hint, phonetic text, audio url,
-    /// license author and a `-/N` footer.
+    /// The landing embed shown before any meaning is selected: title, the "select below" hint,
+    /// phonetic text, audio url, license author and a `-/N` footer.
     fn initial_embed(word: &Word) -> CreateEmbed {
         let mut description =
             String::from("Select one of the below to view different meanings of the word.");
@@ -200,9 +196,8 @@ impl DictionaryCog {
         embed
     }
 
-    /// The per-meaning embed shown after a dropdown selection (Python
-    /// `DictDropdown.callback`): part-of-speech field, definition + example
-    /// blockquote, license author and a `M/N` footer.
+    /// The per-meaning embed shown after a dropdown selection: part-of-speech field,
+    /// definition + example blockquote, license author and a `M/N` footer.
     fn meaning_embed(word: &Word, index: usize) -> CreateEmbed {
         let meaning = &word.meanings[index];
         let definition = meaning
@@ -260,7 +255,6 @@ impl Cog for DictionaryCog {
             return;
         }
 
-        // Python guards with `word.isalpha()` before hitting the API.
         if !word.chars().all(|c| c.is_alphabetic()) {
             let _ = msg
                 .channel_id
@@ -373,7 +367,7 @@ impl Cog for DictionaryCog {
         let cached = self.cache.get(&message_id);
 
         if let Some(entry) = cached.as_ref() {
-            // interaction_check: only the original invoker may use the dropdown.
+            // Only the original invoker may use the dropdown.
             if interaction.user.id.get() != entry.author_id {
                 let _ = interaction
                     .create_response(

@@ -4,13 +4,13 @@ use crate::state::{AppState, Tag};
 use crate::tagscript::{self, TagContext, TagOutput};
 use crate::utils::{colors, embeds};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
-use dashmap::DashMap;
 use serenity::all::{
     ChannelId, Colour, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedAuthor,
-    CreateEmbedFooter, CreateMessage,
-    GuildId, Message, Permissions, ReactionType, RoleId, Timestamp,
+    CreateEmbedFooter, CreateMessage, GuildId, Message, Permissions, ReactionType, RoleId,
+    Timestamp,
 };
 use serenity::prelude::Mentionable;
 use std::collections::HashMap;
@@ -330,7 +330,6 @@ impl TagsCog {
                 .await;
             return;
         }
-        // Mirror tags.py: the whole input is both the script and the {args} seed.
         let mut tag_ctx = self.build_tag_context(ctx, msg, args, 0);
         let output = tagscript::run(args, &mut tag_ctx);
 

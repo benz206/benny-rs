@@ -3,8 +3,7 @@
 //! Voice joining is done by forwarding a raw VOICE_STATE_UPDATE (gateway opcode 4)
 //! through serenity's shard, then asking `lavalink-rs` for the resulting
 //! connection info (it is fed the `voice_server_update` / `voice_state_update`
-//! events from `main.rs`). Commands are dispatched from `on_message`, mirroring
-//! every other cog and the original `bot/cogs/music.py`.
+//! events from `main.rs`). Commands are dispatched from `on_message`.
 
 use crate::cogs::Cog;
 use crate::state::AppState;
@@ -33,7 +32,7 @@ type PlayerData = (ChannelId, Arc<Http>);
 const MAX_QUEUE: usize = 500;
 
 // ===========================================================================
-// Errors (port of bot/gears/music_exceptions.py + DESIGN 7.4 MusicError)
+// Errors
 // ===========================================================================
 
 enum MusicError {

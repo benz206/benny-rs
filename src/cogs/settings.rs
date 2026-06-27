@@ -1,5 +1,7 @@
 use super::Cog;
-use crate::entities::{goodbye_config, logging, prefixes, sentinel_config, settings_users, welcome_config};
+use crate::entities::{
+    goodbye_config, logging, prefixes, sentinel_config, settings_users, welcome_config,
+};
 use crate::state::AppState;
 use crate::utils::{colors, embeds, parse};
 use async_trait::async_trait;
@@ -421,10 +423,7 @@ impl SettingsCog {
             }
             "remove" => {
                 let _ = settings_users::Entity::update_many()
-                    .col_expr(
-                        settings_users::Column::IsBlacklisted,
-                        Expr::value(false),
-                    )
+                    .col_expr(settings_users::Column::IsBlacklisted, Expr::value(false))
                     .filter(settings_users::Column::UserId.eq(user_id))
                     .exec(self.state.users_orm())
                     .await;

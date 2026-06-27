@@ -35,7 +35,7 @@ const CATEGORIES: [(&str, &str); 7] = [
 ];
 
 /// Per-guild decancer settings. Kept in an internal cache because `AppState` has
-/// no `decancer_cache` field (mirrors the Python `DecancerManager` dict).
+/// no `decancer_cache` field.
 #[derive(Debug, Clone, Copy)]
 struct DecancerConfig {
     enabled: bool,
@@ -48,7 +48,7 @@ pub struct SentinelCog {
     /// (state.rs), so kept here, hydrated from a `delete_flagged` column added
     /// idempotently in `on_ready`.
     delete_flags: DashMap<u64, bool>,
-    /// Per-guild decancer config (mirrors the Python `DecancerManager` cache).
+    /// Per-guild decancer config.
     decancer_cache: DashMap<u64, DecancerConfig>,
 }
 
@@ -141,7 +141,7 @@ impl Cog for SentinelCog {
         }
 
         // Toxicity scan: only for sufficiently long, non-command messages in a
-        // sentinel-enabled guild (Python guards `len(clean_content) > 25`).
+        // sentinel-enabled guild (minimum 25 characters).
         if msg.content.chars().count() <= 25 {
             return;
         }
@@ -226,9 +226,11 @@ impl Cog for SentinelCog {
                 .create_response(
                     &ctx.http,
                     CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new().ephemeral(true).content(
-                            "You need the **Manage Server** permission to configure Sentinel.",
-                        ),
+                        CreateInteractionResponseMessage::new()
+                            .ephemeral(true)
+                            .content(
+                                "You need the **Manage Server** permission to configure Sentinel.",
+                            ),
                     ),
                 )
                 .await;
@@ -270,9 +272,11 @@ impl Cog for SentinelCog {
                 .create_response(
                     &ctx.http,
                     CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new().ephemeral(true).content(
-                            "You need the **Manage Server** permission to configure Sentinel.",
-                        ),
+                        CreateInteractionResponseMessage::new()
+                            .ephemeral(true)
+                            .content(
+                                "You need the **Manage Server** permission to configure Sentinel.",
+                            ),
                     ),
                 )
                 .await;
@@ -390,7 +394,7 @@ impl SentinelCog {
             None => return,
         };
 
-        // Color-coded ANSI bar block (mirrors Python `gen_toxicity_bar`).
+        // Color-coded ANSI bar block.
         let mut body = String::from("```ansi\n");
         for (i, (_, label)) in CATEGORIES.iter().enumerate() {
             body.push_str(&bar_row(label, scores[i] * 100.0, thresholds[i] * 100.0));
@@ -874,7 +878,10 @@ impl SentinelCog {
                 let cid = parse::parse_channel_id(arg).unwrap_or_else(|| msg.channel_id.get());
                 self.ensure_decancer_row(guild_id).await;
                 let _ = sentinels_decancer::Entity::update_many()
-                    .col_expr(sentinels_decancer::Column::LogChannelId, Expr::value(cid as i64))
+                    .col_expr(
+                        sentinels_decancer::Column::LogChannelId,
+                        Expr::value(cid as i64),
+                    )
                     .filter(sentinels_decancer::Column::GuildId.eq(guild_id as i64))
                     .exec(self.state.servers_orm())
                     .await;
@@ -1029,7 +1036,7 @@ fn decancer_name(name: &str) -> String {
     }
 }
 
-/// Accept either a 0.0-1.0 float or a 0-100 number (Python stored 0-100 ints).
+/// Accept either a 0.0-1.0 float or a 0-100 number.
 fn parse_threshold(s: &str) -> Option<f64> {
     let v: f64 = s.trim().parse().ok()?;
     if !v.is_finite() {
@@ -1043,7 +1050,7 @@ fn parse_threshold(s: &str) -> Option<f64> {
     }
 }
 
-/// One row of the ANSI toxicity bar (mirrors Python `gen_toxicity_bar`):
+/// One row of the ANSI toxicity bar:
 /// label + percent on one line, a 50-cell colored bar on the next. The bar is
 /// red when the score exceeds its threshold, yellow above half the threshold,
 /// green otherwise.
