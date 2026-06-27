@@ -1,11 +1,13 @@
 use super::Cog;
 use crate::entities::logging;
 use crate::state::{AppState, LoggingConfig};
+use crate::utils::perms;
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    ChannelId, Context, GuildChannel, GuildId, Member, Message, MessageId, Role, RoleId, User,
+    ChannelId, Context, GuildChannel, GuildId, Member, Message, MessageId, Permissions, Role,
+    RoleId, User,
 };
 use serenity::model::event::MessageUpdateEvent;
 use std::sync::Arc;
@@ -136,13 +138,30 @@ impl Cog for LoggingCog {
         let action = parts.next().unwrap_or("");
         let arg = parts.next().unwrap_or("").trim();
 
+        // Logging pipes guild-wide events — including message content — to a
+        // stored webhook, so every subcommand requires Manage Server.
+        if !perms::require_perm(
+            ctx,
+            msg,
+            GuildId::new(guild_id),
+            Permissions::MANAGE_GUILD,
+            "Manage Server",
+        )
+        .await
+        {
+            return;
+        }
+
         match action {
             "setup" => {
                 let webhook_url = arg;
-                if webhook_url.is_empty() || !webhook_url.starts_with("https://") {
+                if webhook_url.is_empty() || !is_discord_webhook(webhook_url) {
                     let _ = msg
                         .channel_id
-                        .say(&ctx.http, "Usage: logging setup <webhook_url>")
+                        .say(
+                            &ctx.http,
+                            "Usage: logging setup <webhook_url> (must be a Discord webhook URL)",
+                        )
                         .await;
                     return;
                 }
@@ -414,4 +433,20 @@ impl Cog for LoggingCog {
         )
         .await;
     }
+}
+
+/// Whether `url` is a Discord webhook endpoint. Restricting the stored log
+/// target to Discord's own hosts prevents a guild's event log — which carries
+/// message edit/delete content — from being pointed at an arbitrary server.
+fn is_discord_webhook(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let Some((host, path)) = rest.split_once('/') else {
+        return false;
+    };
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "discord.com" | "discordapp.com" | "ptb.discord.com" | "canary.discord.com"
+    ) && path.starts_with("api/webhooks/")
 }
