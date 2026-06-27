@@ -4,6 +4,7 @@ use crate::entities::{mod_config, mod_timed};
 use crate::state::AppState;
 use crate::utils::embeds::error_embed;
 use crate::utils::parse::parse_user_id;
+use crate::utils::roles::{role_rank, top_role};
 use crate::utils::time::parse_when;
 use crate::utils::{colors, format};
 use async_trait::async_trait;
@@ -172,6 +173,59 @@ impl ModerationCog {
         None
     }
 
+    /// Enforce role hierarchy on the *invoker*: Discord only stops the bot from
+    /// acting above its own top role, so without this a junior mod with
+    /// ban/kick/timeout perms could action senior staff. The server owner may
+    /// act on anyone; nobody may act on the owner or on a member whose highest
+    /// role is at or above the invoker's. Returns an error message when blocked.
+    /// Targets that aren't current members (e.g. ban by id) have nothing to
+    /// compare and pass.
+    async fn can_act_on(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+        invoker_id: u64,
+        target_id: u64,
+        action: &str,
+    ) -> Option<String> {
+        let (roles, owner_id) = match ctx
+            .cache
+            .guild(guild_id)
+            .map(|g| (g.roles.clone(), g.owner_id))
+        {
+            Some(t) => t,
+            None => {
+                let partial = guild_id.to_partial_guild(&ctx.http).await.ok()?;
+                (partial.roles, partial.owner_id)
+            }
+        };
+        let everyone = RoleId::new(guild_id.get());
+
+        if target_id == owner_id.get() {
+            return Some(format!("You can't {action} the server owner."));
+        }
+        if invoker_id == owner_id.get() {
+            return None;
+        }
+
+        let Ok(target) = guild_id.member(&ctx.http, UserId::new(target_id)).await else {
+            return None; // not a member — bot/Discord hierarchy still applies
+        };
+        let Ok(invoker) = guild_id.member(&ctx.http, UserId::new(invoker_id)).await else {
+            return None;
+        };
+        let invoker_top = top_role(&invoker.roles, &roles, everyone).map(role_rank);
+        let target_top = top_role(&target.roles, &roles, everyone).map(role_rank);
+        if let (Some(it), Some(tt)) = (invoker_top, target_top)
+            && tt >= it
+        {
+            return Some(format!(
+                "You can't {action} someone whose highest role is above or equal to yours."
+            ));
+        }
+        None
+    }
+
     /// Fetch a display name for an arbitrary user id, falling back to a mention.
     async fn fetch_name(&self, ctx: &Context, user_id: u64) -> String {
         match UserId::new(user_id).to_user(&ctx.http).await {
@@ -279,6 +333,13 @@ impl ModerationCog {
             self.reply_error(ctx, msg, &err).await;
             return;
         }
+        if let Some(err) = self
+            .can_act_on(ctx, guild_id, msg.author.id.get(), target_id, "warn")
+            .await
+        {
+            self.reply_error(ctx, msg, &err).await;
+            return;
+        }
 
         let case = self
             .create_case(
@@ -316,6 +377,13 @@ impl ModerationCog {
             return;
         };
         if let Some(err) = self.self_guard(ctx, msg, target_id, "kick") {
+            self.reply_error(ctx, msg, &err).await;
+            return;
+        }
+        if let Some(err) = self
+            .can_act_on(ctx, guild_id, msg.author.id.get(), target_id, "kick")
+            .await
+        {
             self.reply_error(ctx, msg, &err).await;
             return;
         }
@@ -358,6 +426,13 @@ impl ModerationCog {
             return;
         };
         if let Some(err) = self.self_guard(ctx, msg, target_id, "ban") {
+            self.reply_error(ctx, msg, &err).await;
+            return;
+        }
+        if let Some(err) = self
+            .can_act_on(ctx, guild_id, msg.author.id.get(), target_id, "ban")
+            .await
+        {
             self.reply_error(ctx, msg, &err).await;
             return;
         }
@@ -459,6 +534,13 @@ impl ModerationCog {
             return;
         };
         if let Some(err) = self.self_guard(ctx, msg, target_id, "mute") {
+            self.reply_error(ctx, msg, &err).await;
+            return;
+        }
+        if let Some(err) = self
+            .can_act_on(ctx, guild_id, msg.author.id.get(), target_id, "mute")
+            .await
+        {
             self.reply_error(ctx, msg, &err).await;
             return;
         }
