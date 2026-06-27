@@ -1,7 +1,7 @@
 use super::Cog;
 use crate::entities::{sentinel_config, sentinels_decancer};
 use crate::state::{AppState, SentinelConfig};
-use crate::utils::{colors, embeds, parse};
+use crate::utils::{colors, embeds, parse, perms};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use sea_orm::sea_query::{Expr, OnConflict};
@@ -10,7 +10,7 @@ use serenity::all::{
     ActionRowComponent, ButtonStyle, ChannelId, ComponentInteraction, Context, CreateActionRow,
     CreateButton, CreateEmbed, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateMessage, CreateModal, EditMember, GetMessages, GuildId,
-    InputTextStyle, Member, Message, ModalInteraction, Timestamp, UserId,
+    InputTextStyle, Member, Message, ModalInteraction, Permissions, Timestamp, UserId,
 };
 use std::sync::Arc;
 
@@ -212,6 +212,29 @@ impl Cog for SentinelCog {
             .map(|c| c.clone())
             .unwrap_or_else(default_config);
 
+        // The config buttons are visible to anyone in the channel; only let a
+        // member with Manage Server actually open the threshold editor.
+        if !perms::has_perm(
+            ctx,
+            GuildId::new(guild_id),
+            interaction.user.id.get(),
+            Permissions::MANAGE_GUILD,
+        )
+        .await
+        {
+            let _ = interaction
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new().ephemeral(true).content(
+                            "You need the **Manage Server** permission to configure Sentinel.",
+                        ),
+                    ),
+                )
+                .await;
+            return;
+        }
+
         let modal = match cid {
             BTN_THRESH_A => build_modal_a(&config),
             BTN_THRESH_B => build_modal_b(&config),
@@ -232,6 +255,29 @@ impl Cog for SentinelCog {
             Some(g) => g.get(),
             None => return,
         };
+
+        // Re-check on submit — a forged modal submission must not bypass the
+        // button-level Manage Server gate.
+        if !perms::has_perm(
+            ctx,
+            GuildId::new(guild_id),
+            interaction.user.id.get(),
+            Permissions::MANAGE_GUILD,
+        )
+        .await
+        {
+            let _ = interaction
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new().ephemeral(true).content(
+                            "You need the **Manage Server** permission to configure Sentinel.",
+                        ),
+                    ),
+                )
+                .await;
+            return;
+        }
 
         // Flatten the submitted input rows into (custom_id, value) pairs.
         let mut inputs: Vec<(String, String)> = Vec::new();
@@ -411,6 +457,19 @@ impl SentinelCog {
         subcmd: &str,
         arg: &str,
     ) {
+        // Every Sentinel subcommand configures the automod (the `config` panel
+        // itself opens threshold editors), so all require Manage Server.
+        if !perms::require_perm(
+            ctx,
+            msg,
+            GuildId::new(guild_id),
+            Permissions::MANAGE_GUILD,
+            "Manage Server",
+        )
+        .await
+        {
+            return;
+        }
         match subcmd {
             "enable" => {
                 let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
@@ -769,6 +828,18 @@ impl SentinelCog {
         subcmd: &str,
         arg: &str,
     ) {
+        // `decancer user` force-rewrites a member's nickname (Manage Nicknames);
+        // the enable/disable/logs toggles are guild config (Manage Server).
+        let required = match subcmd {
+            "user" => Some((Permissions::MANAGE_NICKNAMES, "Manage Nicknames")),
+            "enable" | "disable" | "logs" => Some((Permissions::MANAGE_GUILD, "Manage Server")),
+            _ => None,
+        };
+        if let Some((perm, label)) = required
+            && !perms::require_perm(ctx, msg, GuildId::new(guild_id), perm, label).await
+        {
+            return;
+        }
         match subcmd {
             "enable" => {
                 self.set_decancer_enabled(guild_id, true).await;
