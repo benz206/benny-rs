@@ -1,8 +1,16 @@
 use super::Cog;
 use crate::state::AppState;
+use crate::utils::{colors, embeds, parse};
 use async_trait::async_trait;
-use serenity::all::{Context, Message};
+use serenity::all::{
+    ButtonStyle, ComponentInteraction, Context, CreateActionRow, CreateButton, CreateEmbed,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, Message, Timestamp,
+};
 use std::sync::Arc;
+
+/// custom_id namespace for this cog's interactive components. Every component
+/// handled here is prefixed with this; `on_component` early-returns otherwise.
+const CID_PREFIX: &str = "set:";
 
 pub struct SettingsCog {
     state: Arc<AppState>,
@@ -11,6 +19,49 @@ pub struct SettingsCog {
 impl SettingsCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
         Arc::new(Self { state })
+    }
+
+    /// Structural validation of an IANA-style timezone string.
+    ///
+    /// A full IANA database check would require the `chrono-tz` crate (not a
+    /// dependency, and Cargo.toml is out of scope for this task), so this does a
+    /// format check: accepts the common single-word zones plus `Area/Location`
+    /// forms with sane characters. Rejects obvious garbage and whitespace.
+    fn is_valid_timezone(tz: &str) -> bool {
+        let tz = tz.trim();
+        if tz.is_empty() || tz.len() > 64 {
+            return false;
+        }
+        if !tz
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
+        {
+            return false;
+        }
+        let upper = tz.to_ascii_uppercase();
+        if matches!(upper.as_str(), "UTC" | "GMT" | "LOCAL" | "ZULU" | "UNIVERSAL") {
+            return true;
+        }
+        // Otherwise require an Area/Location form: at least two non-empty
+        // segments, each beginning with a letter (e.g. America/New_York).
+        let segs: Vec<&str> = tz.split('/').collect();
+        segs.len() >= 2
+            && segs
+                .iter()
+                .all(|s| s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+    }
+
+    async fn guild_prefixes(&self, guild_id: u64) -> Vec<String> {
+        if let Some(entry) = self.state.prefix_cache.get(&guild_id) {
+            return entry.clone();
+        }
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT prefix FROM settings_prefixes WHERE guild_id = ?")
+                .bind(guild_id as i64)
+                .fetch_all(self.state.servers_db())
+                .await
+                .unwrap_or_default();
+        rows.into_iter().map(|(p,)| p).collect()
     }
 }
 
@@ -36,15 +87,17 @@ impl Cog for SettingsCog {
         match cmd {
             "settings" => {
                 let subcmd = it.next().unwrap_or("");
+                let arg = it.next().unwrap_or("").trim();
                 match subcmd {
-                    "show" => self.cmd_show(ctx, msg, guild_id).await,
+                    "show" | "view" | "list" => self.cmd_show(ctx, msg, guild_id).await,
                     "reset" => self.cmd_reset(ctx, msg, guild_id).await,
+                    "timezone" | "tz" => self.cmd_timezone(ctx, msg, arg).await,
                     _ => {
                         let _ = msg
                             .channel_id
                             .say(
                                 &ctx.http,
-                                "Usage: `settings show` | `settings reset`",
+                                "Usage: `settings show` | `settings reset` | `settings timezone <IANA tz>`",
                             )
                             .await;
                     }
@@ -58,24 +111,82 @@ impl Cog for SettingsCog {
             _ => {}
         }
     }
+
+    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+        let custom_id = interaction.data.custom_id.as_str();
+        if !custom_id.starts_with(CID_PREFIX) {
+            return;
+        }
+
+        // Expected: set:reset:<confirm|cancel>:<guild_id>:<author_id>
+        let parts: Vec<&str> = custom_id.split(':').collect();
+        if parts.len() != 5 || parts[1] != "reset" {
+            return;
+        }
+        let action = parts[2];
+        let guild_id: u64 = match parts[3].parse() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let author_id: u64 = match parts[4].parse() {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+
+        // Only the user who invoked the command may resolve the confirmation.
+        if interaction.user.id.get() != author_id {
+            let _ = interaction
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .ephemeral(true)
+                            .content("This confirmation isn't for you."),
+                    ),
+                )
+                .await;
+            return;
+        }
+
+        let response = match action {
+            "confirm" => {
+                self.do_reset(guild_id).await;
+                CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new()
+                        .embed(embeds::success_embed(
+                            "Settings Reset",
+                            "All server settings have been reset to defaults.",
+                        ))
+                        .components(vec![]),
+                )
+            }
+            "cancel" => CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .embed(
+                        CreateEmbed::new()
+                            .title("Reset Cancelled")
+                            .description("No settings were changed.")
+                            .color(colors::GRAY)
+                            .timestamp(Timestamp::now()),
+                    )
+                    .components(vec![]),
+            ),
+            _ => return,
+        };
+        let _ = interaction.create_response(&ctx.http, response).await;
+    }
 }
 
 impl SettingsCog {
     async fn cmd_show(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        let prefixes: Vec<(String,)> = sqlx::query_as(
-            "SELECT prefix FROM settings_prefixes WHERE guild_id = ? ORDER BY prefix",
-        )
-        .bind(guild_id as i64)
-        .fetch_all(self.state.servers_db())
-        .await
-        .unwrap_or_default();
-
+        // --- Server settings ---
+        let prefixes = self.guild_prefixes(guild_id).await;
         let prefix_str = if prefixes.is_empty() {
             format!("`{}`", self.state.prefix())
         } else {
             prefixes
                 .iter()
-                .map(|(p,)| format!("`{p}`"))
+                .map(|p| format!("`{p}`"))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -101,37 +212,100 @@ impl SettingsCog {
             None => "Not configured".to_string(),
         };
 
-        let text = format!(
-            "**Server Settings**\n\
-            **Prefixes:** {prefix_str}\n\
-            **Welcome:** {welcome_str}\n\
-            **Logging:** {logging_str}\n\
-            **Sentinel:** {sentinel_str}"
-        );
-        let _ = msg.channel_id.say(&ctx.http, text).await;
+        // --- User settings (settings_users) ---
+        let user_id = msg.author.id.get() as i64;
+        let user_row: Option<(Option<String>, i64, i64)> = sqlx::query_as(
+            "SELECT timezone, patron_level, is_blacklisted FROM settings_users WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(self.state.users_db())
+        .await
+        .ok()
+        .flatten();
+
+        let (timezone, patron_level, is_blacklisted) = match user_row {
+            Some((tz, patron, blk)) => (tz, patron, blk != 0),
+            None => (None, 0, false),
+        };
+        let timezone_str = timezone.unwrap_or_else(|| "Not set".to_string());
+
+        let embed = CreateEmbed::new()
+            .title("Settings")
+            .color(colors::BLURPLE)
+            .timestamp(Timestamp::now())
+            .field("Prefixes", prefix_str, false)
+            .field("Welcome", welcome_str, true)
+            .field("Logging", logging_str, true)
+            .field("Sentinel", sentinel_str, true)
+            .field(
+                format!("{}'s Timezone", msg.author.name),
+                timezone_str,
+                false,
+            )
+            .field("Patron Level", patron_level.to_string(), true)
+            .field(
+                "Blacklisted",
+                if is_blacklisted { "Yes" } else { "No" }.to_string(),
+                true,
+            );
+
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
     }
 
+    /// Send a confirmation prompt; the destructive work happens in
+    /// `on_component` -> `do_reset` once the invoker clicks Confirm.
     async fn cmd_reset(&self, ctx: &Context, msg: &Message, guild_id: u64) {
+        let author_id = msg.author.id.get();
+        let confirm = CreateButton::new(format!("set:reset:confirm:{guild_id}:{author_id}"))
+            .label("Confirm")
+            .style(ButtonStyle::Danger)
+            .emoji('✅');
+        let cancel = CreateButton::new(format!("set:reset:cancel:{guild_id}:{author_id}"))
+            .label("Cancel")
+            .style(ButtonStyle::Secondary)
+            .emoji('❌');
+
+        let embed = CreateEmbed::new()
+            .title("Reset Server Settings?")
+            .description(
+                "This will reset all server settings (prefixes, welcome, goodbye, logging, \
+                 sentinel) to their defaults. This cannot be undone.",
+            )
+            .color(colors::YELLOW)
+            .timestamp(Timestamp::now());
+
+        let builder = CreateMessage::new()
+            .embed(embed)
+            .components(vec![CreateActionRow::Buttons(vec![confirm, cancel])]);
+        let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+    }
+
+    /// Delete every per-guild settings row and drop the cached copies.
+    async fn do_reset(&self, guild_id: u64) {
         let gid = guild_id as i64;
+        let pool = self.state.servers_db();
         let _ = sqlx::query("DELETE FROM settings_prefixes WHERE guild_id = ?")
             .bind(gid)
-            .execute(self.state.servers_db())
+            .execute(pool)
             .await;
         let _ = sqlx::query("DELETE FROM welcome_config WHERE guild_id = ?")
             .bind(gid)
-            .execute(self.state.servers_db())
+            .execute(pool)
             .await;
         let _ = sqlx::query("DELETE FROM goodbye_config WHERE guild_id = ?")
             .bind(gid)
-            .execute(self.state.servers_db())
+            .execute(pool)
             .await;
         let _ = sqlx::query("DELETE FROM logging_webhooks WHERE guild_id = ?")
             .bind(gid)
-            .execute(self.state.servers_db())
+            .execute(pool)
             .await;
         let _ = sqlx::query("DELETE FROM sentinels_config WHERE guild_id = ?")
             .bind(gid)
-            .execute(self.state.servers_db())
+            .execute(pool)
             .await;
 
         self.state.prefix_cache.remove(&guild_id);
@@ -139,30 +313,65 @@ impl SettingsCog {
         self.state.goodbye_cache.remove(&guild_id);
         self.state.logging_cache.remove(&guild_id);
         self.state.sentinel_cache.remove(&guild_id);
-
-        let _ = msg
-            .channel_id
-            .say(&ctx.http, "All settings reset to defaults.")
-            .await;
     }
 
-    async fn cmd_blacklist(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        subcmd: &str,
-        arg: &str,
-    ) {
-        let user_id: Option<u64> = if arg.starts_with("<@") && arg.ends_with('>') {
-            arg[2..arg.len() - 1]
-                .trim_start_matches('!')
-                .parse()
-                .ok()
-        } else {
-            arg.parse().ok()
-        };
+    async fn cmd_timezone(&self, ctx: &Context, msg: &Message, arg: &str) {
+        if arg.is_empty() {
+            let _ = msg
+                .channel_id
+                .say(
+                    &ctx.http,
+                    "Usage: `settings timezone <IANA tz>` (e.g. `America/New_York`)",
+                )
+                .await;
+            return;
+        }
 
-        let user_id = match user_id {
+        if !Self::is_valid_timezone(arg) {
+            let _ = msg
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new().embed(embeds::error_embed(&format!(
+                        "`{arg}` is not a valid timezone. Use an IANA name like `America/New_York` or `UTC`."
+                    ))),
+                )
+                .await;
+            return;
+        }
+
+        let user_id = msg.author.id.get() as i64;
+        let result = sqlx::query(
+            "INSERT INTO settings_users (user_id, timezone) VALUES (?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET timezone = excluded.timezone",
+        )
+        .bind(user_id)
+        .bind(arg)
+        .execute(self.state.users_db())
+        .await;
+
+        match result {
+            Ok(_) => {
+                let _ = msg
+                    .channel_id
+                    .send_message(
+                        &ctx.http,
+                        CreateMessage::new().embed(embeds::success_embed(
+                            "Timezone Set",
+                            &format!("Your timezone is now set to `{arg}`."),
+                        )),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, "failed to set timezone");
+                let _ = msg.channel_id.say(&ctx.http, "Database error.").await;
+            }
+        }
+    }
+
+    async fn cmd_blacklist(&self, ctx: &Context, msg: &Message, subcmd: &str, arg: &str) {
+        let user_id = match parse::parse_user_id(arg) {
             Some(id) => id as i64,
             None => {
                 let _ = msg
@@ -191,18 +400,13 @@ impl SettingsCog {
                     .await;
             }
             "remove" => {
-                let _ = sqlx::query(
-                    "UPDATE settings_users SET is_blacklisted = 0 WHERE user_id = ?",
-                )
-                .bind(user_id)
-                .execute(self.state.users_db())
-                .await;
+                let _ = sqlx::query("UPDATE settings_users SET is_blacklisted = 0 WHERE user_id = ?")
+                    .bind(user_id)
+                    .execute(self.state.users_db())
+                    .await;
                 let _ = msg
                     .channel_id
-                    .say(
-                        &ctx.http,
-                        format!("<@{user_id}> removed from blacklist."),
-                    )
+                    .say(&ctx.http, format!("<@{user_id}> removed from blacklist."))
                     .await;
             }
             _ => {

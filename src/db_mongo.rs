@@ -16,6 +16,11 @@ pub struct ModCase {
     pub reason: String,
     pub timestamp: String, // ISO 8601 string
     pub active: bool,
+    /// Unix timestamp at which a timed infraction (mute / temp-ban) lifts.
+    /// `None` for permanent / instantaneous actions. `#[serde(default)]` keeps
+    /// older documents (written before this field existed) deserializable.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
 }
 
 pub fn mod_cases_collection(client: &MongoClient) -> mongodb::Collection<ModCase> {
@@ -70,4 +75,38 @@ pub async fn get_cases_for_user(
     let cursor = collection.find(filter).await?;
     let cases = cursor.try_collect::<Vec<ModCase>>().await?;
     Ok(cases)
+}
+
+/// Most recent cases for a guild (highest case number first), capped at `limit`.
+/// Backs the `modlog` command.
+pub async fn recent_cases(
+    client: &MongoClient,
+    guild_id: i64,
+    limit: i64,
+) -> mongodb::error::Result<Vec<ModCase>> {
+    let collection = mod_cases_collection(client);
+    let filter = doc! { "guild_id": guild_id };
+    let cursor = collection
+        .find(filter)
+        .sort(doc! { "case_number": -1 })
+        .limit(limit)
+        .await?;
+    let cases = cursor.try_collect::<Vec<ModCase>>().await?;
+    Ok(cases)
+}
+
+/// Flip a case's `active` flag (used by the expiry task to mark a lifted
+/// mute / temp-ban inactive). No-op if the case does not exist.
+pub async fn set_case_active(
+    client: &MongoClient,
+    guild_id: i64,
+    case_number: i64,
+    active: bool,
+) -> mongodb::error::Result<()> {
+    let collection = mod_cases_collection(client);
+    let filter = doc! { "guild_id": guild_id, "case_number": case_number };
+    collection
+        .update_one(filter, doc! { "$set": { "active": active } })
+        .await?;
+    Ok(())
 }

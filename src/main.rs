@@ -243,7 +243,7 @@ async fn main() -> Result<()> {
 
     let mut manager = CogManager::new(config.prefix.clone());
     manager.register(BaseCog::new(config.prefix.clone()));
-    manager.register(PrefixesCog::new(app_state.servers_db().clone(), config.prefix.clone()));
+    manager.register(PrefixesCog::new(app_state.clone()));
     manager.register(AfkCog::new(app_state.clone()));
     manager.register(RemindersCog::new(app_state.clone()));
     manager.register(TagsCog::new(app_state.clone()));
