@@ -1,12 +1,13 @@
 use super::Cog;
 use crate::entities::prefixes;
 use crate::state::AppState;
-use crate::utils::{colors, embeds};
+use crate::utils::{colors, embeds, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    Context, CreateEmbed, CreateMessage, Guild, Message, Timestamp, UnavailableGuild,
+    Context, CreateEmbed, CreateMessage, Guild, GuildId, Message, Permissions, Timestamp,
+    UnavailableGuild,
 };
 use std::sync::Arc;
 
@@ -167,6 +168,22 @@ impl Cog for PrefixesCog {
 
         let sub = it.next().unwrap_or("");
         let rest = it.next().unwrap_or("").trim();
+
+        // Every mutation requires Manage Server; `list` stays open to everyone.
+        if matches!(
+            sub,
+            "add" | "create" | "+" | "remove" | "del" | "rm" | "delete" | "-" | "reset"
+        ) && !perms::require_perm(
+            ctx,
+            msg,
+            GuildId::new(guild_id),
+            Permissions::MANAGE_GUILD,
+            "Manage Server",
+        )
+        .await
+        {
+            return;
+        }
 
         match sub {
             "add" | "create" | "+" => self.cmd_add(ctx, msg, guild_id, rest).await,

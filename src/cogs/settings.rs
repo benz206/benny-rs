@@ -376,6 +376,16 @@ impl SettingsCog {
     }
 
     async fn cmd_blacklist(&self, ctx: &Context, msg: &Message, subcmd: &str, arg: &str) {
+        // The blacklist is a global (cross-guild) gate on bot usage, so only the
+        // bot owner may edit it — never a regular member (who could otherwise
+        // un-blacklist themselves or blacklist others).
+        if !self.state.is_owner(msg.author.id.get()) {
+            let _ = msg
+                .channel_id
+                .say(&ctx.http, "This command is owner-only.")
+                .await;
+            return;
+        }
         let user_id = match parse::parse_user_id(arg) {
             Some(id) => id as i64,
             None => {
