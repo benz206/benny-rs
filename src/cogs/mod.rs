@@ -154,3 +154,4 @@ pub mod welcome;
 pub mod dev;
 pub mod premium;
 pub mod music;
+pub mod events;

@@ -23,17 +23,30 @@ mod utils;
 use config::load_config;
 use state::{start_latency_task, AppState};
 
-fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .with_level(true)
-        .compact()
+fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
+    use tracing_subscriber::prelude::*;
+    std::fs::create_dir_all("logs").ok();
+    let (file_writer, guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::never("logs", "benny.log"));
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .compact(),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(file_writer),
+        )
         .init();
+    guard
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
+    // Held until the end of main so the non-blocking file writer flushes on exit.
+    let _log_guard = init_tracing();
 
     let config = match load_config() {
         Ok(c) => c,
@@ -117,6 +130,7 @@ async fn main() -> Result<()> {
         help::HelpCog,
         info::InfoCog,
         logging::LoggingCog,
+        events::EventsCog,
         moderation::ModerationCog,
         music::MusicCog,
         ocr::OcrCog,
@@ -263,6 +277,7 @@ async fn main() -> Result<()> {
     manager.register(DevCog::new(app_state.clone()));
     manager.register(PremiumCog::new(app_state.clone()));
     manager.register(MusicCog::new(app_state.clone()));
+    manager.register(EventsCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
     // Keep a bounded message cache so logging can show edited/deleted content.
