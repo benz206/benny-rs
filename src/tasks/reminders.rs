@@ -17,11 +17,18 @@ pub fn spawn_reminder_task(state: Arc<AppState>, http: Arc<Http>) {
         info!("reminder task started");
         loop {
             let now = chrono::Utc::now().timestamp();
-            let due = reminders::Entity::find()
+            let due = match reminders::Entity::find()
                 .filter(reminders::Column::FireAt.lte(now))
                 .all(state.users_orm())
                 .await
-                .unwrap_or_default();
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    error!(error = ?e, "failed to query due reminders");
+                    sleep(Duration::from_secs(30)).await;
+                    continue;
+                }
+            };
 
             let mut affected: HashSet<i64> = HashSet::new();
 
@@ -49,11 +56,15 @@ pub fn spawn_reminder_task(state: Arc<AppState>, http: Arc<Http>) {
                     }
                 }
 
-                // Delete regardless of DM success so a blocked DM can't loop forever.
-                let _ = reminders::Entity::delete_many()
-                    .filter(reminders::Column::Id.eq(id))
+                // Delete regardless of DM success so a blocked DM can't loop
+                // forever. If the delete itself fails, log it — otherwise the row
+                // stays due and gets re-sent on every poll.
+                if let Err(e) = reminders::Entity::delete_by_id(id)
                     .exec(state.users_orm())
-                    .await;
+                    .await
+                {
+                    error!(error = ?e, id, "failed to delete fired reminder");
+                }
                 affected.insert(user_id);
             }
 

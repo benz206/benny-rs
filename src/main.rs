@@ -59,7 +59,13 @@ async fn main() -> Result<()> {
 
     info!("starting benny-rs");
 
-    let http_client = reqwest::Client::builder().build()?;
+    // Shared by every user-triggered external fetch (translate, dictionary,
+    // ocr, sentiment, mystbin); reqwest has no default timeout, so without one
+    // a slow upstream would hang the calling task indefinitely.
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()?;
     tokio::fs::create_dir_all("databases").await.ok();
     let servers_db = sqlx::SqlitePool::connect("sqlite://databases/servers.db?mode=rwc").await?;
     let users_db = sqlx::SqlitePool::connect("sqlite://databases/users.db?mode=rwc").await?;
