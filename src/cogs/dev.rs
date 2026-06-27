@@ -60,7 +60,7 @@ impl DevCog {
         let mut sys = System::new_all();
         sys.refresh_all();
 
-        let cpu_usage: f32 = sys.global_cpu_info().cpu_usage();
+        let cpu_usage: f32 = sys.global_cpu_usage();
         let total_mem = sys.total_memory() / 1024 / 1024; // MB
         let used_mem = sys.used_memory() / 1024 / 1024;   // MB
         let os_name = System::long_os_version().unwrap_or_else(|| "Unknown".to_string());

@@ -180,7 +180,7 @@ impl SentinelCog {
                 let query = format!(
                     "INSERT INTO sentinels_config (guild_id, {col}) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET {col} = excluded.{col}"
                 );
-                let _ = sqlx::query(&query)
+                let _ = sqlx::query(sqlx::AssertSqlSafe(query))
                     .bind(guild_id as i64)
                     .bind(value)
                     .execute(self.state.servers_db())

@@ -1,5 +1,5 @@
 use super::{TagOutput, context::TagContext};
-use rand::Rng;
+use rand::RngExt;
 
 pub fn process_block(
     name: &str,
@@ -24,7 +24,7 @@ pub fn process_block(
             if choices.is_empty() {
                 return String::new();
             }
-            let idx = rand::thread_rng().gen_range(0..choices.len());
+            let idx = rand::rng().random_range(0..choices.len());
             choices[idx].trim().to_string()
         }
 
@@ -41,7 +41,7 @@ pub fn process_block(
             if min >= max {
                 return min.to_string();
             }
-            rand::thread_rng().gen_range(min..=max).to_string()
+            rand::rng().random_range(min..=max).to_string()
         }
 
         // Conditional: {if(condition):true|false}
