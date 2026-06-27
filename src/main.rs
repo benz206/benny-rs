@@ -10,8 +10,9 @@ use tracing::{error, info};
 
 mod cogs;
 mod config;
-mod db;
 mod db_mongo;
+mod entities;
+mod migrations;
 mod error;
 mod http;
 mod slash;
@@ -63,8 +64,12 @@ async fn main() -> Result<()> {
     let servers_db = sqlx::SqlitePool::connect("sqlite://databases/servers.db?mode=rwc").await?;
     let users_db = sqlx::SqlitePool::connect("sqlite://databases/users.db?mode=rwc").await?;
 
-    db::ensure_servers_schema(&servers_db).await?;
-    db::ensure_users_schema(&users_db).await?;
+    // Run SeaORM migrations (replaces the old inline CREATE TABLE schema in
+    // db.rs). Each migrator runs against the SeaORM connection that shares the
+    // corresponding sqlx pool.
+    use sea_orm_migration::MigratorTrait;
+    migrations::ServersMigrator::up(&sea_orm::DatabaseConnection::from(servers_db.clone()), None).await?;
+    migrations::UsersMigrator::up(&sea_orm::DatabaseConnection::from(users_db.clone()), None).await?;
 
     // Connect MongoDB (optional - warn if unavailable)
     let mongo = match mongodb::Client::with_uri_str(&config.mongodb_uri).await {

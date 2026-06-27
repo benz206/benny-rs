@@ -4,6 +4,7 @@ use mongodb::Client as MongoClient;
 use parking_lot::Mutex;
 use redis::aio::ConnectionManager as RedisManager;
 use reqwest::Client as HttpClient;
+use sea_orm::DatabaseConnection;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,6 +68,10 @@ pub struct AppState {
     pub http: HttpClient,
     pub servers_db: SqlitePool,
     pub users_db: SqlitePool,
+    /// SeaORM handles over the same underlying sqlx pools (built via
+    /// `From<SqlitePool>`). Cogs query through these instead of raw SQL.
+    pub servers_orm: DatabaseConnection,
+    pub users_orm: DatabaseConnection,
     pub mongo: Option<MongoClient>,
     pub redis: Option<Arc<tokio::sync::Mutex<RedisManager>>>,
     pub prefix_cache: Arc<DashMap<u64, Vec<String>>>,
@@ -92,11 +97,17 @@ impl AppState {
         mongo: Option<MongoClient>,
         redis: Option<Arc<tokio::sync::Mutex<RedisManager>>>,
     ) -> Self {
+        // Wrap the existing sqlx pools so SeaORM shares the same connections
+        // (no second pool / no extra SQLite file locking).
+        let servers_orm = DatabaseConnection::from(servers_db.clone());
+        let users_orm = DatabaseConnection::from(users_db.clone());
         Self {
             config,
             http,
             servers_db,
             users_db,
+            servers_orm,
+            users_orm,
             mongo,
             redis,
             prefix_cache: Arc::new(DashMap::new()),
@@ -120,6 +131,12 @@ impl AppState {
     }
     pub fn users_db(&self) -> &SqlitePool {
         &self.users_db
+    }
+    pub fn servers_orm(&self) -> &DatabaseConnection {
+        &self.servers_orm
+    }
+    pub fn users_orm(&self) -> &DatabaseConnection {
+        &self.users_orm
     }
     pub fn prefix(&self) -> &str {
         &self.config.prefix

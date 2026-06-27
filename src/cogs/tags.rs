@@ -1,8 +1,11 @@
 use super::Cog;
+use crate::entities::tags;
 use crate::state::{AppState, Tag};
 use crate::tagscript::{self, TagContext, TagOutput};
 use crate::utils::{colors, embeds};
 use async_trait::async_trait;
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use dashmap::DashMap;
 use serenity::all::{
     ChannelId, Colour, Context, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateMessage,
@@ -36,28 +39,26 @@ impl TagsCog {
 impl Cog for TagsCog {
     async fn on_ready(&self, _ctx: &Context) {
         // Load all tags from DB into tag_cache
-        let rows: Vec<(i64, String, String, i64, i64, i64)> = sqlx::query_as(
-            "SELECT guild_id, name, content, owner_id, uses, created_at FROM tags_tags",
-        )
-        .fetch_all(self.state.servers_db())
-        .await
-        .unwrap_or_default();
+        let rows = tags::Entity::find()
+            .all(self.state.servers_orm())
+            .await
+            .unwrap_or_default();
 
         let mut count = 0usize;
-        for (guild_id, name, content, owner_id, uses, created_at) in rows {
+        for m in rows {
             let mut guild_tags = self
                 .state
                 .tag_cache
-                .entry(guild_id as u64)
+                .entry(m.guild_id as u64)
                 .or_insert_with(HashMap::new);
             guild_tags.insert(
-                name.clone(),
+                m.name.clone(),
                 Tag {
-                    name,
-                    content,
-                    owner_id,
-                    uses,
-                    created_at,
+                    name: m.name,
+                    content: m.content,
+                    owner_id: m.owner_id,
+                    uses: m.uses,
+                    created_at: m.created_at,
                 },
             );
             count += 1;
@@ -281,11 +282,18 @@ impl TagsCog {
 
         self.send_output_message(ctx, msg, &output).await;
 
-        // Increment the uses counter (DB + cache).
-        let _ = sqlx::query("UPDATE tags_tags SET uses = uses + 1 WHERE guild_id = ? AND name = ?")
-            .bind(guild_id as i64)
-            .bind(name)
-            .execute(self.state.servers_db())
+        // Increment the uses counter (DB + cache). `ExprTrait` (for `.add`) is
+        // scoped to this block so its blanket impl doesn't shadow inherent
+        // methods like `u64::max` elsewhere in the function.
+        let inc_uses = {
+            use sea_orm::sea_query::ExprTrait;
+            Expr::col(tags::Column::Uses).add(1)
+        };
+        let _ = tags::Entity::update_many()
+            .col_expr(tags::Column::Uses, inc_uses)
+            .filter(tags::Column::GuildId.eq(guild_id as i64))
+            .filter(tags::Column::Name.eq(name))
+            .exec(self.state.servers_orm())
             .await;
         if let Some(mut gt) = self.state.tag_cache.get_mut(&guild_id) {
             if let Some(t) = gt.get_mut(name) {
@@ -375,19 +383,27 @@ impl TagsCog {
 
         let owner_id = msg.author.id.get() as i64;
         let created_at = chrono::Utc::now().timestamp();
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO tags_tags (guild_id, name, content, owner_id, uses, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+        // INSERT OR IGNORE: do nothing if (guild_id, name) already exists.
+        // SeaORM returns `Err(DbErr::RecordNotInserted)` when the conflict
+        // clause skips the row, which we treat as "already exists".
+        let result = tags::Entity::insert(tags::ActiveModel {
+            guild_id: Set(guild_id as i64),
+            name: Set(name.clone()),
+            content: Set(content.clone()),
+            owner_id: Set(owner_id),
+            uses: Set(0),
+            created_at: Set(created_at),
+        })
+        .on_conflict(
+            OnConflict::columns([tags::Column::GuildId, tags::Column::Name])
+                .do_nothing()
+                .to_owned(),
         )
-        .bind(guild_id as i64)
-        .bind(&name)
-        .bind(&content)
-        .bind(owner_id)
-        .bind(created_at)
-        .execute(self.state.servers_db())
+        .exec(self.state.servers_orm())
         .await;
 
         match result {
-            Ok(r) if r.rows_affected() > 0 => {
+            Ok(_) => {
                 let len = content.chars().count();
                 self.state
                     .tag_cache
@@ -412,7 +428,7 @@ impl TagsCog {
                     .send_message(&ctx.http, CreateMessage::new().embed(embed))
                     .await;
             }
-            Ok(_) => {
+            Err(DbErr::RecordNotInserted) => {
                 let _ = msg
                     .channel_id
                     .say(
@@ -480,11 +496,11 @@ impl TagsCog {
         }
 
         let len = content.chars().count();
-        let _ = sqlx::query("UPDATE tags_tags SET content = ? WHERE guild_id = ? AND name = ?")
-            .bind(&content)
-            .bind(guild_id as i64)
-            .bind(&name)
-            .execute(self.state.servers_db())
+        let _ = tags::Entity::update_many()
+            .col_expr(tags::Column::Content, Expr::value(content.clone()))
+            .filter(tags::Column::GuildId.eq(guild_id as i64))
+            .filter(tags::Column::Name.eq(name.as_str()))
+            .exec(self.state.servers_orm())
             .await;
         if let Some(mut gt) = self.state.tag_cache.get_mut(&guild_id) {
             if let Some(t) = gt.get_mut(&name) {
@@ -540,10 +556,10 @@ impl TagsCog {
             return;
         }
 
-        let _ = sqlx::query("DELETE FROM tags_tags WHERE guild_id = ? AND name = ?")
-            .bind(guild_id as i64)
-            .bind(&name)
-            .execute(self.state.servers_db())
+        let _ = tags::Entity::delete_many()
+            .filter(tags::Column::GuildId.eq(guild_id as i64))
+            .filter(tags::Column::Name.eq(name.as_str()))
+            .exec(self.state.servers_orm())
             .await;
         if let Some(mut gt) = self.state.tag_cache.get_mut(&guild_id) {
             gt.remove(&name);
