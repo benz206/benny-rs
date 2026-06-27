@@ -1,7 +1,9 @@
 use super::Cog;
 use crate::state::AppState;
 use async_trait::async_trait;
-use serenity::all::{Attachment, Context, GetMessages, Message};
+use serenity::all::{
+    Attachment, Context, CreateAllowedMentions, CreateMessage, GetMessages, Message,
+};
 use std::sync::Arc;
 
 pub struct OcrCog {
@@ -198,17 +200,28 @@ impl Cog for OcrCog {
                     let truncated = crate::utils::format::truncate(&text, 1900);
                     let _ = msg
                         .channel_id
-                        .say(
+                        .send_message(
                             &ctx.http,
-                            format!("```\n{truncated}\n```\n*(truncated — paste upload failed)*"),
+                            CreateMessage::new()
+                                .content(format!(
+                                    "```\n{truncated}\n```\n*(truncated — paste upload failed)*"
+                                ))
+                                .allowed_mentions(CreateAllowedMentions::new()),
                         )
                         .await;
                 }
             }
         } else {
+            // OCR'd text is attacker-controlled (an image can contain a
+            // code-block breakout + @everyone), so suppress all pings.
             let _ = msg
                 .channel_id
-                .say(&ctx.http, format!("```\n{text}\n```"))
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new()
+                        .content(format!("```\n{text}\n```"))
+                        .allowed_mentions(CreateAllowedMentions::new()),
+                )
                 .await;
         }
     }

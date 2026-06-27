@@ -12,7 +12,8 @@ use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serde_json::Value;
 use serenity::all::{
-    ButtonStyle, ChannelId, Colour, ComponentInteraction, Context, CreateActionRow, CreateButton,
+    ButtonStyle, ChannelId, Colour, ComponentInteraction, Context, CreateActionRow,
+    CreateAllowedMentions, CreateButton,
     CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateMessage, GuildId, Member, Message, Permissions, RoleId,
     Timestamp, User, UserId,
@@ -1060,7 +1061,9 @@ async fn send_output(
     if !has_content && embed.is_none() {
         return;
     }
-    let mut create = CreateMessage::new();
+    // Greeting templates are member-authored and interpolate the joining user's
+    // name, so suppress all pings (@everyone / roles / arbitrary users).
+    let mut create = CreateMessage::new().allowed_mentions(CreateAllowedMentions::new());
     if has_content {
         create = create.content(content);
     }

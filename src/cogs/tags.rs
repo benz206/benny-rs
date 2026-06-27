@@ -8,7 +8,8 @@ use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use dashmap::DashMap;
 use serenity::all::{
-    ChannelId, Colour, Context, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateMessage,
+    ChannelId, Colour, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedAuthor,
+    CreateEmbedFooter, CreateMessage,
     GuildId, Message, Permissions, ReactionType, RoleId, Timestamp,
 };
 use serenity::prelude::Mentionable;
@@ -205,7 +206,9 @@ impl TagsCog {
         let has_content = !output.content.trim().is_empty();
         let has_embed = output.embed.is_some();
         if has_content || has_embed {
-            let mut create = CreateMessage::new();
+            // Tag content is member-authored, so never let it ping @everyone,
+            // @here, roles, or arbitrary users.
+            let mut create = CreateMessage::new().allowed_mentions(CreateAllowedMentions::new());
             if has_content {
                 create = create.content(output.content.clone());
             }
@@ -254,7 +257,15 @@ impl TagsCog {
         // {stop:...} — send the stop message as-is and bail.
         if output.stopped {
             if !output.content.trim().is_empty() {
-                let _ = msg.channel_id.say(&ctx.http, &output.content).await;
+                let _ = msg
+                    .channel_id
+                    .send_message(
+                        &ctx.http,
+                        CreateMessage::new()
+                            .content(output.content.clone())
+                            .allowed_mentions(CreateAllowedMentions::new()),
+                    )
+                    .await;
             }
             return;
         }
@@ -317,7 +328,15 @@ impl TagsCog {
 
         if output.stopped {
             if !output.content.trim().is_empty() {
-                let _ = msg.channel_id.say(&ctx.http, &output.content).await;
+                let _ = msg
+                    .channel_id
+                    .send_message(
+                        &ctx.http,
+                        CreateMessage::new()
+                            .content(output.content.clone())
+                            .allowed_mentions(CreateAllowedMentions::new()),
+                    )
+                    .await;
             }
             return;
         }
