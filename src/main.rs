@@ -4,7 +4,7 @@ use serenity::all::{
     Guild, GuildChannel, GuildId, Interaction, Member, Message, MessageId,
     Reaction, Ready, Role, RoleId, UnavailableGuild, User, VoiceState,
 };
-use serenity::model::event::{GuildMemberUpdateEvent, MessageUpdateEvent};
+use serenity::model::event::{GuildMemberUpdateEvent, MessageUpdateEvent, VoiceServerUpdateEvent};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -164,6 +164,12 @@ async fn main() -> Result<()> {
             self.cogs.dispatch_ready(&ctx).await;
             slash::register_global(&ctx).await;
 
+            // Connect to Lavalink exactly once and store the client in shared state.
+            if self.state.lavalink.get().is_none() {
+                let client = cogs::music::connect_lavalink(&self.state, ready.user.id).await;
+                let _ = self.state.lavalink.set(client);
+            }
+
             // Spawn reminder background task exactly once
             if !self.reminder_task_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 tasks::reminders::spawn_reminder_task(self.state.clone(), ctx.http.clone());
@@ -236,7 +242,23 @@ async fn main() -> Result<()> {
         }
 
         async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+            // Forward to lavalink-rs so it can build voice connection info.
+            if let (Some(lava), Some(guild_id)) = (self.state.lavalink.get(), new.guild_id) {
+                lava.handle_voice_state_update(
+                    guild_id,
+                    new.channel_id,
+                    new.user_id,
+                    new.session_id.clone(),
+                );
+            }
             self.cogs.dispatch_voice_state_update(&ctx, old, &new).await;
+        }
+
+        async fn voice_server_update(&self, _ctx: Context, event: VoiceServerUpdateEvent) {
+            // Forward to lavalink-rs so it can build voice connection info.
+            if let (Some(lava), Some(guild_id)) = (self.state.lavalink.get(), event.guild_id) {
+                lava.handle_voice_server_update(guild_id, event.token, event.endpoint);
+            }
         }
 
         async fn interaction_create(&self, ctx: Context, interaction: Interaction) {

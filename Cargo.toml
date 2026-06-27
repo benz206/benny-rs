@@ -11,6 +11,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 dashmap = "6.2.1"
 decancer = "3.3.3"
 interim = { version = "0.2.1", default-features = false, features = ["std", "chrono_0_4"] }
+lavalink-rs = { version = "0.15.0", features = ["serenity"] }
 unicode_names2 = "3.1.0"
 humantime = "2.3.0"
 mongodb = "3.7.0"
@@ -27,6 +28,9 @@ sysinfo = "0.39.5"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-util = "0.7.18"
+# Pinned to match serenity 0.12's gateway websocket Message type, so we can
+# forward a raw voice-state-update (opcode 4) through `ShardMessenger`.
+tokio-tungstenite = { version = "0.21", default-features = false }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["time"] }

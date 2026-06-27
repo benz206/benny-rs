@@ -76,6 +76,9 @@ pub struct AppState {
     pub welcome_cache: Arc<DashMap<u64, WelcomeConfig>>,
     pub goodbye_cache: Arc<DashMap<u64, GoodbyeConfig>>,
     pub logging_cache: Arc<DashMap<u64, LoggingConfig>>,
+    /// Lavalink client, set once at `ready` (see `cogs::music`). Empty until then,
+    /// so the bot runs fine without a Lavalink server.
+    pub lavalink: Arc<tokio::sync::OnceCell<lavalink_rs::client::LavalinkClient>>,
     pub latency_ms: Arc<Mutex<Vec<u64>>>,
     pub start_time: Instant,
 }
@@ -103,6 +106,7 @@ impl AppState {
             welcome_cache: Arc::new(DashMap::new()),
             goodbye_cache: Arc::new(DashMap::new()),
             logging_cache: Arc::new(DashMap::new()),
+            lavalink: Arc::new(tokio::sync::OnceCell::new()),
             latency_ms: Arc::new(Mutex::new(Vec::with_capacity(64))),
             start_time: Instant::now(),
         }
@@ -115,6 +119,10 @@ impl AppState {
     pub fn latency(&self) -> Arc<Mutex<Vec<u64>>> { self.latency_ms.clone() }
     pub fn uptime_secs(&self) -> u64 { self.start_time.elapsed().as_secs() }
     pub fn is_owner(&self, user_id: u64) -> bool { self.config.owners.contains(&user_id) }
+    /// The Lavalink client, if it has been initialized at `ready`.
+    pub fn lavalink(&self) -> Option<lavalink_rs::client::LavalinkClient> {
+        self.lavalink.get().cloned()
+    }
 }
 
 pub fn start_latency_task(state: Arc<AppState>) {
