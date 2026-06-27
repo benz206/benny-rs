@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 /// Names that may not be used as tags because they collide with the tag
 /// subsystem's own commands.
 const RESERVED_NAMES: &[&str] = &["tag", "tagtest", "tt", "playground", "testtag"];
+const MAX_TAG_NAME_LEN: usize = 32;
+const MAX_TAG_CONTENT_LEN: usize = 2000;
 
 pub struct TagsCog {
     state: Arc<AppState>,
@@ -101,14 +103,17 @@ impl Cog for TagsCog {
         }
 
         // Otherwise treat an unmatched first word as a possible tag invocation.
+        // Names are stored lower-cased, so match case-insensitively (otherwise
+        // `Hello` could never invoke the stored `hello`).
+        let tag_name = first_word.to_lowercase();
         let exists = self
             .state
             .tag_cache
             .get(&guild_id)
-            .map(|gt| gt.contains_key(first_word))
+            .map(|gt| gt.contains_key(&tag_name))
             .unwrap_or(false);
         if exists {
-            self.invoke_tag(ctx, msg, guild_id, first_word, rest).await;
+            self.invoke_tag(ctx, msg, guild_id, &tag_name, rest).await;
         }
     }
 }
@@ -210,7 +215,10 @@ impl TagsCog {
             // @here, roles, or arbitrary users.
             let mut create = CreateMessage::new().allowed_mentions(CreateAllowedMentions::new());
             if has_content {
-                create = create.content(output.content.clone());
+                // Cap at Discord's 2000-char message limit; an oversized render
+                // would otherwise fail to send and the tag would do nothing.
+                let content: String = output.content.chars().take(2000).collect();
+                create = create.content(content);
             }
             if let Some(ref embed_json) = output.embed {
                 create = create.embed(json_to_embed(embed_json));
@@ -389,6 +397,22 @@ impl TagsCog {
                 .await;
             return;
         }
+        if name.chars().count() > MAX_TAG_NAME_LEN
+            || !name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
+            let _ = msg
+                .channel_id
+                .say(
+                    &ctx.http,
+                    format!(
+                        "Tag names must be ≤{MAX_TAG_NAME_LEN} characters and contain only letters, numbers, `_` or `-`."
+                    ),
+                )
+                .await;
+            return;
+        }
         let content = match parts.next() {
             Some(c) if !c.trim().is_empty() => c.trim().to_string(),
             _ => {
@@ -399,6 +423,16 @@ impl TagsCog {
                 return;
             }
         };
+        if content.chars().count() > MAX_TAG_CONTENT_LEN {
+            let _ = msg
+                .channel_id
+                .say(
+                    &ctx.http,
+                    format!("Tag content must be ≤{MAX_TAG_CONTENT_LEN} characters."),
+                )
+                .await;
+            return;
+        }
 
         let owner_id = msg.author.id.get() as i64;
         let created_at = chrono::Utc::now().timestamp();
@@ -485,6 +519,16 @@ impl TagsCog {
                 return;
             }
         };
+        if content.chars().count() > MAX_TAG_CONTENT_LEN {
+            let _ = msg
+                .channel_id
+                .say(
+                    &ctx.http,
+                    format!("Tag content must be ≤{MAX_TAG_CONTENT_LEN} characters."),
+                )
+                .await;
+            return;
+        }
 
         let owner_id = self
             .state
