@@ -18,7 +18,7 @@ There are no tests. The bot requires `config.json` in the working directory and 
 
 ### Core flow
 
-`main.rs` wires everything together: loads `config.json` → connects SQLite (two pools) + MongoDB + Redis → constructs `Arc<AppState>` → registers all cogs into `CogManager` → starts the serenity Discord client + Axum HTTP server.
+`main.rs` wires everything together: loads `config.json` → connects SQLite (two pools) + Redis → constructs `Arc<AppState>` → registers all cogs into `CogManager` → starts the serenity Discord client + Axum HTTP server.
 
 In debug builds (`cargo run`), `config.dev_token` is used instead of `token`.
 
@@ -27,7 +27,7 @@ In debug builds (`cargo run`), `config.dev_token` is used instead of `token`.
 The single shared state passed via `Arc<AppState>` into every cog constructor. Contains:
 - `http` — reqwest client for external API calls
 - `servers_db` / `users_db` — two SQLite pools (guild data vs user data)
-- `mongo` / `redis` — both `Option<T>`; the bot runs without them (moderation cases and caching degrade gracefully)
+- `redis` — `Option<T>`; the bot runs without it (caching degrades gracefully)
 - Seven `DashMap` caches: `prefix_cache`, `afk_cache`, `tag_cache`, `sentinel_cache`, `welcome_cache`, `goodbye_cache`, `logging_cache` — populated in each cog's `on_ready` from the DB
 
 ### Cog system (`src/cogs/mod.rs`)
@@ -41,9 +41,9 @@ To add a new cog:
 
 ### Database
 
-- `src/db.rs` — SQLite schema creation (inline `CREATE TABLE IF NOT EXISTS`, called at startup)
-- `src/db_mongo.rs` — MongoDB helpers for moderation cases (`mod_cases`, `mod_counts` collections in the `benny` database)
-- SQLite `servers.db`: tags, prefixes, sentinel config, AFK, welcome/goodbye/logging config
+- `src/migrations/mod.rs` — SeaORM migrations (one migrator per database), run at startup; table DDL lives here
+- `src/entities/` — SeaORM entity per table (`Model`/`ActiveModel`); cogs query through these rather than hand-written SQL
+- SQLite `servers.db`: tags, prefixes, sentinel config, AFK, welcome/goodbye/logging config, moderation (`mod_config`, `mod_timed`, `mod_cases`)
 - SQLite `users.db`: user settings (patron level, blacklist, timezone), reminders
 
 ### TagScript engine (`src/tagscript/`)

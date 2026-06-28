@@ -10,8 +10,6 @@ pub struct BotConfig {
     pub prefix: String,
     #[serde(default)]
     pub cogs: Vec<String>,
-    #[serde(default = "default_mongo_uri")]
-    pub mongodb_uri: String,
     #[serde(default = "default_redis_uri")]
     pub redis_uri: String,
     #[serde(default)]
@@ -47,9 +45,6 @@ pub struct SpotifyConfig {
 
 fn default_prefix() -> String {
     ">".to_string()
-}
-fn default_mongo_uri() -> String {
-    "mongodb://localhost:27017".to_string()
 }
 fn default_redis_uri() -> String {
     "redis://localhost:6379".to_string()

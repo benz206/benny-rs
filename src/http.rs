@@ -32,12 +32,10 @@ async fn ping(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let db_ok = state.servers_orm().ping().await.is_ok();
-    let mongo_ok = state.mongo.is_some();
     let redis_ok = state.redis.is_some();
     Json(json!({
         "ok": db_ok,
         "db": if db_ok { "ok" } else { "error" },
-        "mongo": if mongo_ok { "connected" } else { "unavailable" },
         "redis": if redis_ok { "connected" } else { "unavailable" },
         "uptime_secs": state.uptime_secs()
     }))

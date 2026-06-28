@@ -15,7 +15,7 @@ pub struct UsersMigrator;
 
 impl MigratorTrait for ServersMigrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(InitServers)]
+        vec![Box::new(InitServers), Box::new(AddModCases)]
     }
 }
 
@@ -178,6 +178,44 @@ const SERVERS_TABLES: &[&str] = &[
         PRIMARY KEY (guild_id, case_number)
     )",
 ];
+
+// ---------------------------------------------------------------------------
+// servers.db — moderation cases (added after the initial schema; replaces the
+// old MongoDB `mod_cases` / `mod_counts` collections so the bot is SQL-only).
+// ---------------------------------------------------------------------------
+struct AddModCases;
+
+impl MigrationName for AddModCases {
+    fn name(&self) -> &str {
+        "m20260628_000002_add_mod_cases"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddModCases {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        run_all(
+            manager,
+            &["CREATE TABLE IF NOT EXISTS mod_cases (
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                target_id INTEGER NOT NULL,
+                moderator_id INTEGER NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                expires_at INTEGER,
+                PRIMARY KEY (guild_id, case_number)
+            )"],
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_all(manager, &["mod_cases"]).await
+    }
+}
 
 // ---------------------------------------------------------------------------
 // users.db

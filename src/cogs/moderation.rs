@@ -1,6 +1,5 @@
 use super::Cog;
-use crate::db_mongo::{self, ModCase};
-use crate::entities::{mod_config, mod_timed};
+use crate::entities::{mod_cases, mod_config, mod_timed};
 use crate::state::AppState;
 use crate::utils::embeds::error_embed;
 use crate::utils::parse::parse_user_id;
@@ -9,8 +8,10 @@ use crate::utils::time::parse_when;
 use crate::utils::{colors, format};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{
+    ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+};
 use serenity::all::{
     Context, CreateEmbed, CreateEmbedFooter, CreateMessage, EditRole, GuildId, Http, Message,
     PermissionOverwrite, PermissionOverwriteType, Permissions, RoleId, Timestamp, UserId,
@@ -233,8 +234,11 @@ impl ModerationCog {
         }
     }
 
-    /// Insert a moderation case into MongoDB, returning the assigned case
-    /// number. Degrades to `None` (no case number) when Mongo is unavailable.
+    /// Insert a moderation case into SQLite via the ORM, returning the assigned
+    /// per-guild case number (current highest + 1). The read and the insert run
+    /// in one transaction; the `(guild_id, case_number)` primary key is the
+    /// final backstop against a duplicate should two actions ever race. Returns
+    /// `None` only on a database error.
     async fn create_case(
         &self,
         guild_id: GuildId,
@@ -244,40 +248,55 @@ impl ModerationCog {
         reason: &str,
         expires_at: Option<i64>,
     ) -> Option<i64> {
-        let mongo = match &self.state.mongo {
-            Some(m) => m,
-            None => {
-                tracing::warn!("MongoDB not available, cannot create moderation case");
-                return None;
-            }
-        };
+        let gid = guild_id.get() as i64;
+        let now = Utc::now().timestamp();
 
-        let guild_id_i64 = guild_id.get() as i64;
-        let case_number = match db_mongo::next_case_number(mongo, guild_id_i64).await {
-            Ok(n) => n,
+        let txn = match self.state.servers_orm().begin().await {
+            Ok(t) => t,
             Err(e) => {
-                tracing::error!(error = ?e, "failed to get next case number");
+                tracing::error!(error = ?e, "failed to open case transaction");
                 return None;
             }
         };
 
-        let case = ModCase {
-            guild_id: guild_id_i64,
-            case_number,
-            action_type: action_type.to_string(),
-            target_id: target_id as i64,
-            moderator_id: moderator_id as i64,
-            reason: reason.to_string(),
-            timestamp: Utc::now().to_rfc3339(),
-            active: true,
-            expires_at,
+        // Next per-guild case number = current highest + 1, read inside the
+        // transaction so it stays consistent with the insert that follows.
+        let highest = match mod_cases::Entity::find()
+            .filter(mod_cases::Column::GuildId.eq(gid))
+            .order_by_desc(mod_cases::Column::CaseNumber)
+            .one(&txn)
+            .await
+        {
+            Ok(row) => row.map(|m| m.case_number).unwrap_or(0),
+            Err(e) => {
+                tracing::error!(error = ?e, "failed to read highest case number");
+                return None;
+            }
         };
+        let case_number = highest + 1;
 
-        if let Err(e) = db_mongo::insert_case(mongo, &case).await {
-            tracing::error!(error = ?e, "failed to insert case");
+        if let Err(e) = mod_cases::Entity::insert(mod_cases::ActiveModel {
+            guild_id: Set(gid),
+            case_number: Set(case_number),
+            action_type: Set(action_type.to_owned()),
+            target_id: Set(target_id as i64),
+            moderator_id: Set(moderator_id as i64),
+            reason: Set(reason.to_owned()),
+            created_at: Set(now),
+            active: Set(true),
+            expires_at: Set(expires_at),
+        })
+        .exec(&txn)
+        .await
+        {
+            tracing::error!(error = ?e, "failed to insert moderation case");
             return None;
         }
 
+        if let Err(e) = txn.commit().await {
+            tracing::error!(error = ?e, "failed to commit moderation case");
+            return None;
+        }
         Some(case_number)
     }
 
@@ -583,8 +602,8 @@ impl ModerationCog {
             )
             .await;
 
-        // Record the active timed infraction for the expiry sweeper. When Mongo
-        // is offline we still need a primary key, so fall back to a local
+        // Record the active timed infraction for the expiry sweeper. If the case
+        // insert failed we still need a primary key, so fall back to a local
         // monotonic counter scoped to mod_timed.
         let case_number = match case {
             Some(c) => c,
@@ -689,16 +708,10 @@ impl ModerationCog {
             }
         };
 
-        let mongo = match &self.state.mongo {
-            Some(m) => m,
-            None => {
-                self.reply_error(ctx, msg, "Moderation database unavailable.")
-                    .await;
-                return;
-            }
-        };
-
-        match db_mongo::get_case(mongo, guild_id.get() as i64, case_number).await {
+        match mod_cases::Entity::find_by_id((guild_id.get() as i64, case_number))
+            .one(self.state.servers_orm())
+            .await
+        {
             Ok(Some(case)) => {
                 self.reply_embed(ctx, msg, case_embed(&case)).await;
             }
@@ -720,105 +733,93 @@ impl ModerationCog {
             return;
         };
 
-        let mongo = match &self.state.mongo {
-            Some(m) => m,
-            None => {
-                self.reply_error(ctx, msg, "Moderation database unavailable.")
-                    .await;
-                return;
-            }
-        };
-
-        match db_mongo::get_cases_for_user(mongo, guild_id.get() as i64, target_id as i64).await {
-            Ok(cases) if cases.is_empty() => {
-                self.reply_error(ctx, msg, &format!("No cases found for <@{target_id}>."))
-                    .await;
-            }
-            Ok(mut cases) => {
-                cases.sort_by_key(|c| c.case_number);
-                let mut embed = CreateEmbed::new()
-                    .title(format!(
-                        "Cases for {}",
-                        self.fetch_name(ctx, target_id).await
-                    ))
-                    .description(format!("<@{target_id}> has **{}** case(s).", cases.len()))
-                    .color(colors::BLURPLE)
-                    .timestamp(Timestamp::now());
-                for c in cases.iter().take(15) {
-                    embed = embed.field(
-                        format!(
-                            "#{} \u{2022} {}",
-                            c.case_number,
-                            c.action_type.to_uppercase()
-                        ),
-                        format!(
-                            "**Reason:** {}\n**Moderator:** <@{}>",
-                            format::truncate(&c.reason, 200),
-                            c.moderator_id
-                        ),
-                        false,
-                    );
-                }
-                if cases.len() > 15 {
-                    embed = embed.footer(CreateEmbedFooter::new(format!(
-                        "...and {} more",
-                        cases.len() - 15
-                    )));
-                }
-                self.reply_embed(ctx, msg, embed).await;
-            }
+        let cases = match mod_cases::Entity::find()
+            .filter(mod_cases::Column::GuildId.eq(guild_id.get() as i64))
+            .filter(mod_cases::Column::TargetId.eq(target_id as i64))
+            .order_by_asc(mod_cases::Column::CaseNumber)
+            .all(self.state.servers_orm())
+            .await
+        {
+            Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = ?e, "failed to get cases");
                 self.reply_error(ctx, msg, "Failed to retrieve cases.")
                     .await;
+                return;
             }
+        };
+
+        if cases.is_empty() {
+            self.reply_error(ctx, msg, &format!("No cases found for <@{target_id}>."))
+                .await;
+            return;
         }
+
+        let mut embed = CreateEmbed::new()
+            .title(format!("Cases for {}", self.fetch_name(ctx, target_id).await))
+            .description(format!("<@{target_id}> has **{}** case(s).", cases.len()))
+            .color(colors::BLURPLE)
+            .timestamp(Timestamp::now());
+        for c in cases.iter().take(15) {
+            embed = embed.field(
+                format!("#{} \u{2022} {}", c.case_number, c.action_type.to_uppercase()),
+                format!(
+                    "**Reason:** {}\n**Moderator:** <@{}>",
+                    format::truncate(&c.reason, 200),
+                    c.moderator_id
+                ),
+                false,
+            );
+        }
+        if cases.len() > 15 {
+            embed = embed.footer(CreateEmbedFooter::new(format!(
+                "...and {} more",
+                cases.len() - 15
+            )));
+        }
+        self.reply_embed(ctx, msg, embed).await;
     }
 
     async fn cmd_modlog(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
-        let mongo = match &self.state.mongo {
-            Some(m) => m,
-            None => {
-                self.reply_error(ctx, msg, "Moderation database unavailable.")
+        let cases = match mod_cases::Entity::find()
+            .filter(mod_cases::Column::GuildId.eq(guild_id.get() as i64))
+            .order_by_desc(mod_cases::Column::CaseNumber)
+            .limit(15)
+            .all(self.state.servers_orm())
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = ?e, "failed to get modlog");
+                self.reply_error(ctx, msg, "Failed to retrieve the modlog.")
                     .await;
                 return;
             }
         };
 
-        match db_mongo::recent_cases(mongo, guild_id.get() as i64, 15).await {
-            Ok(cases) if cases.is_empty() => {
-                self.reply_error(ctx, msg, "No moderation actions recorded yet.")
-                    .await;
-            }
-            Ok(cases) => {
-                let mut embed = CreateEmbed::new()
-                    .title("Recent Moderation Actions")
-                    .color(colors::BLURPLE)
-                    .timestamp(Timestamp::now());
-                for c in &cases {
-                    embed = embed.field(
-                        format!(
-                            "#{} \u{2022} {}",
-                            c.case_number,
-                            c.action_type.to_uppercase()
-                        ),
-                        format!(
-                            "**Target:** <@{}>\n**Moderator:** <@{}>\n**Reason:** {}",
-                            c.target_id,
-                            c.moderator_id,
-                            format::truncate(&c.reason, 150)
-                        ),
-                        false,
-                    );
-                }
-                self.reply_embed(ctx, msg, embed).await;
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to get modlog");
-                self.reply_error(ctx, msg, "Failed to retrieve the modlog.")
-                    .await;
-            }
+        if cases.is_empty() {
+            self.reply_error(ctx, msg, "No moderation actions recorded yet.")
+                .await;
+            return;
         }
+
+        let mut embed = CreateEmbed::new()
+            .title("Recent Moderation Actions")
+            .color(colors::BLURPLE)
+            .timestamp(Timestamp::now());
+        for c in &cases {
+            embed = embed.field(
+                format!("#{} \u{2022} {}", c.case_number, c.action_type.to_uppercase()),
+                format!(
+                    "**Target:** <@{}>\n**Moderator:** <@{}>\n**Reason:** {}",
+                    c.target_id,
+                    c.moderator_id,
+                    format::truncate(&c.reason, 150)
+                ),
+                false,
+            );
+        }
+        self.reply_embed(ctx, msg, embed).await;
     }
 
     // ---- mute-role plumbing ----------------------------------------------
@@ -890,7 +891,7 @@ impl ModerationCog {
         Some(role.id)
     }
 
-    /// Next mod_timed primary key when no Mongo case number is available.
+    /// Next mod_timed primary key when no case number is available.
     async fn fallback_case_number(&self, guild_id: GuildId) -> i64 {
         // Highest existing case number for the guild (NULL/no rows -> 0), +1.
         let max: Option<i64> = mod_timed::Entity::find()
@@ -968,7 +969,7 @@ fn extract_duration(after: &str) -> Option<(DateTime<Utc>, String)> {
 }
 
 /// Detailed embed for a single case lookup.
-fn case_embed(case: &ModCase) -> CreateEmbed {
+fn case_embed(case: &mod_cases::Model) -> CreateEmbed {
     let mut embed = CreateEmbed::new()
         .title(format!(
             "Case #{} \u{2022} {}",
@@ -979,7 +980,7 @@ fn case_embed(case: &ModCase) -> CreateEmbed {
         .field("Target", format!("<@{}>", case.target_id), true)
         .field("Moderator", format!("<@{}>", case.moderator_id), true)
         .field("Reason", &case.reason, false)
-        .field("When", &case.timestamp, false)
+        .field("When", format!("<t:{}:F>", case.created_at), false)
         .timestamp(Timestamp::now());
     if let Some(exp) = case.expires_at {
         embed = embed.field(
@@ -993,7 +994,7 @@ fn case_embed(case: &ModCase) -> CreateEmbed {
 
 /// Background sweeper: every `EXPIRY_INTERVAL_SECS` it lifts any timed
 /// infraction whose `expires_at` has passed (removes the Muted role for mutes,
-/// unbans for temp-bans), marks the Mongo case inactive, and clears the row.
+/// unbans for temp-bans), marks the logged case inactive, and clears the row.
 fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
     tokio::spawn(async move {
         loop {
@@ -1060,9 +1061,13 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
                     .exec(state.servers_orm())
                     .await;
 
-                if let Some(mongo) = &state.mongo {
-                    let _ = db_mongo::set_case_active(mongo, gid, case_number, false).await;
-                }
+                // Mark the logged case inactive (best-effort).
+                let _ = mod_cases::Entity::update_many()
+                    .col_expr(mod_cases::Column::Active, Expr::value(false))
+                    .filter(mod_cases::Column::GuildId.eq(gid))
+                    .filter(mod_cases::Column::CaseNumber.eq(case_number))
+                    .exec(state.servers_orm())
+                    .await;
 
                 if !lifted {
                     tracing::warn!(guild = gid, case = case_number, action = %action, "failed to lift infraction");

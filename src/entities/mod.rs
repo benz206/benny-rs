@@ -11,6 +11,7 @@
 pub mod afk;
 pub mod goodbye_config;
 pub mod logging;
+pub mod mod_cases;
 pub mod mod_config;
 pub mod mod_timed;
 pub mod prefixes;

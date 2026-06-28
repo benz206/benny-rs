@@ -1,6 +1,5 @@
 use crate::config::BotConfig;
 use dashmap::DashMap;
-use mongodb::Client as MongoClient;
 use parking_lot::Mutex;
 use redis::aio::ConnectionManager as RedisManager;
 use reqwest::Client as HttpClient;
@@ -71,7 +70,6 @@ pub struct AppState {
     /// exclusively through them.
     pub servers_orm: DatabaseConnection,
     pub users_orm: DatabaseConnection,
-    pub mongo: Option<MongoClient>,
     pub redis: Option<Arc<tokio::sync::Mutex<RedisManager>>>,
     pub prefix_cache: Arc<DashMap<u64, Vec<String>>>,
     pub afk_cache: Arc<DashMap<(u64, u64), AfkEntry>>,
@@ -93,7 +91,6 @@ impl AppState {
         http: HttpClient,
         servers_db: SqlitePool,
         users_db: SqlitePool,
-        mongo: Option<MongoClient>,
         redis: Option<Arc<tokio::sync::Mutex<RedisManager>>>,
     ) -> Self {
         // Wrap the sqlx pools so SeaORM owns them directly (no second pool /
@@ -105,7 +102,6 @@ impl AppState {
             http,
             servers_orm,
             users_orm,
-            mongo,
             redis,
             prefix_cache: Arc::new(DashMap::new()),
             afk_cache: Arc::new(DashMap::new()),

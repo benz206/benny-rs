@@ -10,7 +10,6 @@ use tracing::{error, info};
 
 mod cogs;
 mod config;
-mod db_mongo;
 mod entities;
 mod error;
 mod http;
@@ -93,18 +92,6 @@ async fn main() -> Result<()> {
     migrations::UsersMigrator::up(&sea_orm::DatabaseConnection::from(users_db.clone()), None)
         .await?;
 
-    // Connect MongoDB (optional - warn if unavailable)
-    let mongo = match mongodb::Client::with_uri_str(&config.mongodb_uri).await {
-        Ok(client) => {
-            info!("MongoDB connected");
-            Some(client)
-        }
-        Err(e) => {
-            tracing::warn!(error = ?e, "MongoDB unavailable, moderation features disabled");
-            None
-        }
-    };
-
     // Connect Redis (optional - warn if unavailable)
     let redis = match redis::Client::open(config.redis_uri.as_str()) {
         Ok(client) => match redis::aio::ConnectionManager::new(client).await {
@@ -128,7 +115,6 @@ async fn main() -> Result<()> {
         http_client,
         servers_db,
         users_db,
-        mongo,
         redis,
     ));
     start_latency_task(app_state.clone());
