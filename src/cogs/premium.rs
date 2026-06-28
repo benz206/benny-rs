@@ -1,6 +1,6 @@
 use super::Cog;
 use crate::entities::{premium_tokens, settings_users};
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::embeds::error_embed;
 use crate::utils::format;
 use async_trait::async_trait;
@@ -358,22 +358,11 @@ impl PremiumCog {
 
 #[async_trait]
 impl Cog for PremiumCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        if inv.command != "premium" {
+            return false;
         }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        if cmd != "premium" {
-            return;
-        }
-        let rest = it.next().unwrap_or("").trim();
+        let rest = inv.args;
 
         // Split sub-command from its remaining argument.
         let mut parts = rest.splitn(2, ' ');
@@ -394,5 +383,6 @@ impl Cog for PremiumCog {
                 .await;
             }
         }
+        true
     }
 }

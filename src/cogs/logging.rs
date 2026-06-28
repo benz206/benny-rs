@@ -1,6 +1,6 @@
 use super::Cog;
 use crate::entities::logging;
-use crate::state::{AppState, LoggingConfig};
+use crate::state::{AppState, CommandInvocation, LoggingConfig};
 use crate::utils::perms;
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
@@ -113,27 +113,16 @@ impl Cog for LoggingCog {
         tracing::info!("Logging configs loaded");
     }
 
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         let guild_id = match msg.guild_id {
             Some(g) => g.get(),
-            None => return,
+            None => return false,
         };
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        if cmd != "logging" {
-            return;
+        if inv.command != "logging" {
+            return false;
         }
 
-        let subcmd = it.next().unwrap_or("").trim();
+        let subcmd = inv.args;
         let mut parts = subcmd.splitn(2, ' ');
         let action = parts.next().unwrap_or("");
         let arg = parts.next().unwrap_or("").trim();
@@ -149,7 +138,7 @@ impl Cog for LoggingCog {
         )
         .await
         {
-            return;
+            return true;
         }
 
         match action {
@@ -163,7 +152,7 @@ impl Cog for LoggingCog {
                             "Usage: logging setup <webhook_url> (must be a Discord webhook URL)",
                         )
                         .await;
-                    return;
+                    return true;
                 }
                 let _ = logging::Entity::insert(logging::ActiveModel {
                     guild_id: Set(guild_id as i64),
@@ -217,6 +206,7 @@ impl Cog for LoggingCog {
                     .await;
             }
         }
+        true
     }
 
     async fn on_message_update(

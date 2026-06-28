@@ -2,7 +2,7 @@ use super::Cog;
 use crate::entities::{
     goodbye_config, logging, prefixes, sentinel_config, settings_users, welcome_config,
 };
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::{colors, embeds, parse};
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
@@ -60,38 +60,20 @@ impl SettingsCog {
     }
 
     async fn guild_prefixes(&self, guild_id: u64) -> Vec<String> {
-        if let Some(entry) = self.state.prefix_cache.get(&guild_id) {
-            return entry.clone();
-        }
-        let rows = prefixes::Entity::find()
-            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-        rows.into_iter().map(|m| m.prefix).collect()
+        self.state.custom_prefixes(guild_id).await
     }
 }
 
 #[async_trait]
 impl Cog for SettingsCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         let guild_id = match msg.guild_id {
             Some(g) => g.get(),
-            None => return,
+            None => return false,
         };
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(3, ' ');
-        let Some(cmd) = it.next() else { return };
+        let mut it = inv.args.splitn(2, ' ');
 
-        match cmd {
+        match inv.command {
             "settings" => {
                 let subcmd = it.next().unwrap_or("");
                 let arg = it.next().unwrap_or("").trim();
@@ -115,8 +97,9 @@ impl Cog for SettingsCog {
                 let arg = it.next().unwrap_or("").trim();
                 self.cmd_blacklist(ctx, msg, subcmd, arg).await;
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::embeds::error_embed;
 use crate::utils::parse::{parse_role_id, parse_user_id};
 use crate::utils::{colors, format};
@@ -33,32 +33,21 @@ impl InfoCog {
 
 #[async_trait]
 impl Cog for InfoCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         let Some(guild_id) = msg.guild_id else {
-            return;
+            return false;
         };
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        let arg = it.next().unwrap_or("").trim();
-
-        match cmd {
+        let arg = inv.args;
+        match inv.command {
             "info" | "userinfo" | "ui" | "whois" | "i" => {
                 self.cmd_info(ctx, msg, guild_id, arg).await
             }
             "serverinfo" | "si" | "guildinfo" => self.cmd_serverinfo(ctx, msg, guild_id).await,
             "roleinfo" | "ri" => self.cmd_roleinfo(ctx, msg, guild_id, arg).await,
             "avatar" | "av" | "pfp" => self.cmd_avatar(ctx, msg, guild_id, arg).await,
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

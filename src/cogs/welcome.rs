@@ -2,7 +2,7 @@ use super::Cog;
 use crate::entities::{
     goodbye_config, sticky_roles, sticky_roles_config, welcome_autoroles, welcome_config,
 };
-use crate::state::{AppState, GoodbyeConfig, WelcomeConfig};
+use crate::state::{AppState, CommandInvocation, GoodbyeConfig, WelcomeConfig};
 use crate::tagscript::{self, TagContext};
 use crate::utils::parse::{parse_channel_id, parse_role_id};
 use crate::utils::roles::{role_rank, top_role};
@@ -79,21 +79,13 @@ impl Cog for WelcomeCog {
         tracing::info!("Welcome cache loaded ({welcome_count} welcome, {goodbye_count} goodbye)");
     }
 
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         let guild_id = match msg.guild_id {
             Some(g) => g.get(),
-            None => return,
+            None => return false,
         };
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let (cmd, rest) = split_first(body);
+        let cmd = inv.command;
+        let rest = inv.args;
 
         match cmd {
             "welcome" | "welc" => {
@@ -115,8 +107,9 @@ impl Cog for WelcomeCog {
                 let (sub, _) = split_first(rest);
                 self.handle_stickyrole_cmd(ctx, msg, guild_id, sub).await;
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     async fn on_member_join(&self, ctx: &Context, member: &Member) {

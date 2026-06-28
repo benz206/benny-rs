@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::embeds::error_embed;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -593,22 +593,12 @@ impl HelpCog {
 
 #[async_trait]
 impl Cog for HelpCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        if inv.command != "help" {
+            return false;
         }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        if cmd != "help" {
-            return;
-        }
-        let arg = it.next().unwrap_or("").trim();
+        let arg = inv.args;
+        let prefix = inv.prefix.to_string();
 
         let name = msg.author.name.clone();
         let icon = msg.author.face();
@@ -624,7 +614,7 @@ impl Cog for HelpCog {
                 overview_components(),
             )
             .await;
-            return;
+            return true;
         }
 
         // `help <category>` wins over `help <command>` so e.g. `help moderation`
@@ -639,7 +629,7 @@ impl Cog for HelpCog {
                 category_components(cat),
             )
             .await;
-            return;
+            return true;
         }
         if let Some((cat, command)) = find_command(arg) {
             let embed = command_embed(cat, command, &prefix, &name, &icon);
@@ -647,7 +637,7 @@ impl Cog for HelpCog {
                 .channel_id
                 .send_message(&ctx.http, CreateMessage::new().embed(embed))
                 .await;
-            return;
+            return true;
         }
 
         let _ = msg
@@ -659,6 +649,7 @@ impl Cog for HelpCog {
                 ))),
             )
             .await;
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

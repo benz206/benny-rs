@@ -1,6 +1,6 @@
 use super::Cog;
 use crate::entities::{sentinel_config, sentinels_decancer};
-use crate::state::{AppState, SentinelConfig};
+use crate::state::{AppState, CommandInvocation, SentinelConfig};
 use crate::utils::{colors, embeds, parse, perms};
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -109,38 +109,18 @@ impl Cog for SentinelCog {
     }
 
     async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
         let guild_id = match msg.guild_id {
             Some(g) => g.get(),
             None => return,
         };
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
 
-        // Management commands. A prefixed message that isn't ours is some other
-        // cog's command, so it should never be scanned for toxicity either.
-        if content.starts_with(&prefix) {
-            let body = content[prefix.len()..].trim();
-            let mut it = body.splitn(3, ' ');
-            match it.next() {
-                Some("sentinel") => {
-                    let sub = it.next().unwrap_or("");
-                    let arg = it.next().unwrap_or("").trim();
-                    self.handle_sentinel_cmd(ctx, msg, guild_id, sub, arg).await;
-                }
-                Some("decancer") => {
-                    let sub = it.next().unwrap_or("");
-                    let arg = it.next().unwrap_or("").trim();
-                    self.handle_decancer_cmd(ctx, msg, guild_id, sub, arg).await;
-                }
-                _ => {}
-            }
+        // Never scan prefix commands for toxicity — a prefixed message (any of
+        // the guild's prefixes) is some cog's command, not chatter.
+        if self.state.parse_command(msg).is_some() {
             return;
         }
 
-        // Toxicity scan: only for sufficiently long, non-command messages in a
+        // Toxicity scan: only for sufficiently long messages in a
         // sentinel-enabled guild (minimum 25 characters).
         if msg.content.chars().count() <= 25 {
             return;
@@ -154,6 +134,28 @@ impl Cog for SentinelCog {
         };
         self.check_toxicity(ctx, msg, guild_id, &config, &api_url)
             .await;
+    }
+
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        let guild_id = match msg.guild_id {
+            Some(g) => g.get(),
+            None => return false,
+        };
+        let mut it = inv.args.splitn(2, ' ');
+        match inv.command {
+            "sentinel" => {
+                let sub = it.next().unwrap_or("");
+                let arg = it.next().unwrap_or("").trim();
+                self.handle_sentinel_cmd(ctx, msg, guild_id, sub, arg).await;
+            }
+            "decancer" => {
+                let sub = it.next().unwrap_or("");
+                let arg = it.next().unwrap_or("").trim();
+                self.handle_decancer_cmd(ctx, msg, guild_id, sub, arg).await;
+            }
+            _ => return false,
+        }
+        true
     }
 
     async fn on_member_join(&self, ctx: &Context, member: &Member) {

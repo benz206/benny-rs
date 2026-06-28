@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::{colors, format};
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -181,22 +181,11 @@ impl TranslateCog {
 
 #[async_trait]
 impl Cog for TranslateCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        if inv.command != "translate" && inv.command != "trans" {
+            return false;
         }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        if cmd != "translate" && cmd != "trans" {
-            return;
-        }
-        let args = it.next().unwrap_or("").trim();
+        let args = inv.args;
 
         if args.is_empty() {
             let _ = msg
@@ -206,7 +195,7 @@ impl Cog for TranslateCog {
                     "Usage: translate [--to <lang>] <text>\nExample: translate --to es Hello world",
                 )
                 .await;
-            return;
+            return true;
         }
 
         // Optional `--to <lang>` flag (default English), accepted at the front.
@@ -224,7 +213,7 @@ impl Cog for TranslateCog {
                 .channel_id
                 .say(&ctx.http, "Please provide text to translate.")
                 .await;
-            return;
+            return true;
         }
 
         let (detected, translated) = match self.translate_text(&text, &target_lang).await {
@@ -234,7 +223,7 @@ impl Cog for TranslateCog {
                     .channel_id
                     .say(&ctx.http, "Translation service unavailable.")
                     .await;
-                return;
+                return true;
             }
         };
 
@@ -262,6 +251,7 @@ impl Cog for TranslateCog {
                 tracing::error!(error = ?e, "failed to send translation message");
             }
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

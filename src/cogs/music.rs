@@ -6,7 +6,7 @@
 //! events from `main.rs`). Commands are dispatched from `on_message`.
 
 use crate::cogs::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::{colors, embeds};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -280,7 +280,7 @@ impl MusicCog {
                 "guild_id": guild_id.get().to_string(),
                 "channel_id": channel.map(|c| c.get().to_string()),
                 "self_mute": false,
-                "self_deaf": true,
+                "self_deaf": false,
             }
         })
         .to_string();
@@ -685,25 +685,12 @@ impl MusicCog {
 
 #[async_trait]
 impl Cog for MusicCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         let Some(guild_id) = msg.guild_id else {
-            return;
+            return false;
         };
-
-        let prefix = self.state.prefix();
-        let Some(rest) = msg.content.strip_prefix(prefix) else {
-            return;
-        };
-
-        let mut parts = rest.trim_start().splitn(2, char::is_whitespace);
-        let Some(cmd) = parts.next() else {
-            return;
-        };
-        let cmd = cmd.to_lowercase();
-        let args = parts.next().unwrap_or("").trim();
+        let cmd = inv.command.to_lowercase();
+        let args = inv.args;
 
         match cmd.as_str() {
             "play" | "p" => self.cmd_play(ctx, msg, guild_id, args).await,
@@ -715,7 +702,8 @@ impl Cog for MusicCog {
             "nowplaying" | "np" => self.cmd_nowplaying(ctx, msg, guild_id).await,
             "volume" | "vol" => self.cmd_volume(ctx, msg, guild_id, args).await,
             "stop" => self.cmd_stop(ctx, msg, guild_id).await,
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }

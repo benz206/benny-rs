@@ -1,3 +1,4 @@
+use crate::state::{AppState, CommandInvocation};
 use async_trait::async_trait;
 use serenity::all::{
     ChannelId, ComponentInteraction, Context, Guild, GuildChannel, GuildId, Member, Message,
@@ -5,6 +6,7 @@ use serenity::all::{
 };
 use serenity::model::event::{GuildMemberUpdateEvent, MessageUpdateEvent};
 use std::sync::Arc;
+use tracing::info;
 
 /// Event hooks dispatched to every registered cog. All default to no-ops so a
 /// cog only implements the events it cares about.
@@ -16,7 +18,23 @@ use std::sync::Arc;
 #[async_trait]
 pub trait Cog: Send + Sync {
     async fn on_ready(&self, _ctx: &Context) {}
+    /// Every non-bot message. Use this only for behaviour that must run on
+    /// messages that are NOT prefix commands (e.g. AFK auto-clear, toxicity
+    /// scanning). Prefix-command handling belongs in `on_command`.
     async fn on_message(&self, _ctx: &Context, _msg: &Message) {}
+    /// A parsed prefix command (`CogManager` resolves the guild's prefix once
+    /// and dispatches here). Return `true` iff this cog owns the command — even
+    /// if it then errors on permissions or validation. The manager logs an
+    /// invocation only when some cog claims it, so unknown input is never
+    /// logged and dynamic handlers (tags) still count as real commands.
+    async fn on_command(
+        &self,
+        _ctx: &Context,
+        _msg: &Message,
+        _inv: &CommandInvocation<'_>,
+    ) -> bool {
+        false
+    }
     async fn on_member_join(&self, _ctx: &Context, _member: &Member) {}
     async fn on_member_leave(&self, _ctx: &Context, _guild_id: GuildId, _user: &User) {}
     async fn on_member_update(
@@ -78,14 +96,14 @@ pub trait Cog: Send + Sync {
 }
 
 pub struct CogManager {
-    prefix: String,
+    state: Arc<AppState>,
     cogs: Vec<Arc<dyn Cog>>,
 }
 
 impl CogManager {
-    pub fn new(prefix: String) -> Self {
+    pub fn new(state: Arc<AppState>) -> Self {
         Self {
-            prefix,
+            state,
             cogs: Vec::new(),
         }
     }
@@ -94,13 +112,27 @@ impl CogManager {
         self.cogs.push(cog);
     }
 
-    pub fn prefix(&self) -> &str {
-        &self.prefix
-    }
-
+    /// Fan every message out to the observer hook, then — if the message parses
+    /// as a prefix command — dispatch it to `on_command` and log it once. The
+    /// guild's prefix is resolved here, in one place, so custom prefixes work
+    /// for every command. A command is logged only when some cog handled it, so
+    /// nonexistent commands produce no log line.
     pub async fn dispatch_message(&self, ctx: &Context, msg: &Message) {
         for cog in &self.cogs {
             cog.on_message(ctx, msg).await;
+        }
+
+        let Some(inv) = self.state.parse_command(msg) else {
+            return;
+        };
+        let mut handled = false;
+        for cog in &self.cogs {
+            if cog.on_command(ctx, msg, &inv).await {
+                handled = true;
+            }
+        }
+        if handled {
+            log_command(ctx, msg, &inv);
         }
     }
 
@@ -261,6 +293,35 @@ impl CogManager {
             cog.on_modal(ctx, interaction).await;
         }
     }
+}
+
+/// Log a handled command invocation. IDs go in structured fields (the user's
+/// ask); guild/channel names are resolved synchronously from the cache for a
+/// readable line. No `.await` here, so holding the cache guard is fine.
+fn log_command(ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) {
+    let (guild_name, channel_name) = match msg.guild_id.and_then(|gid| ctx.cache.guild(gid)) {
+        Some(g) => {
+            let cn = g
+                .channels
+                .get(&msg.channel_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| msg.channel_id.to_string());
+            (g.name.clone(), cn)
+        }
+        None => ("DM".to_string(), msg.channel_id.to_string()),
+    };
+
+    info!(
+        guild_id = msg.guild_id.map(|g| g.get()),
+        channel_id = msg.channel_id.get(),
+        user_id = msg.author.id.get(),
+        message_id = msg.id.get(),
+        command = inv.command,
+        "{guild_name} / {channel_name} / {} ({}): {}",
+        msg.author.name,
+        msg.author.id,
+        msg.content
+    );
 }
 
 pub mod afk;

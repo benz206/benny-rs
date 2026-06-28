@@ -3,7 +3,8 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use redis::aio::ConnectionManager as RedisManager;
 use reqwest::Client as HttpClient;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use serenity::all::Message;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,6 +60,17 @@ pub struct GoodbyeConfig {
 pub struct LoggingConfig {
     pub webhook_url: String,
     pub enabled: bool,
+}
+
+/// A parsed prefix-command invocation. All fields borrow `msg.content`, so the
+/// matched prefix, command word, and argument remainder are zero-copy slices.
+pub struct CommandInvocation<'a> {
+    /// The prefix that matched (a slice of the message content).
+    pub prefix: &'a str,
+    /// First whitespace-delimited token after the prefix (the command name).
+    pub command: &'a str,
+    /// Everything after the command word, trimmed (may be empty).
+    pub args: &'a str,
 }
 
 #[derive(Clone)]
@@ -127,6 +139,63 @@ impl AppState {
     }
     pub fn prefix(&self) -> &str {
         &self.config.prefix
+    }
+    /// A guild's raw custom prefix list — empty when it has none — cache-first
+    /// with a DB fallback for a cold cache, sorted by length to match the cache
+    /// ordering. This is for the prefix-management UIs (`prefix list/add`,
+    /// `settings`), which must distinguish "no custom prefixes" from the
+    /// default. Command dispatch uses `guild_prefixes` instead, which falls back
+    /// to the default and never touches the DB.
+    pub async fn custom_prefixes(&self, guild_id: u64) -> Vec<String> {
+        if let Some(entry) = self.prefix_cache.get(&guild_id) {
+            return entry.clone();
+        }
+        let rows = crate::entities::prefixes::Entity::find()
+            .filter(crate::entities::prefixes::Column::GuildId.eq(guild_id as i64))
+            .all(&self.servers_orm)
+            .await
+            .unwrap_or_default();
+        let mut result: Vec<String> = rows.into_iter().map(|m| m.prefix).collect();
+        result.sort_by_key(|p| p.len());
+        result
+    }
+    /// Active prefixes for a guild: the guild's custom prefixes if it has any,
+    /// otherwise the global default. Cache-only — this is the single source of
+    /// truth used by command dispatch, so it must not touch the DB on the hot
+    /// path (the cache is hydrated on ready and on guild join). `None` (DMs)
+    /// always resolves to the default prefix.
+    pub fn guild_prefixes(&self, guild_id: Option<u64>) -> Vec<String> {
+        if let Some(gid) = guild_id {
+            if let Some(entry) = self.prefix_cache.get(&gid) {
+                if !entry.is_empty() {
+                    return entry.clone();
+                }
+            }
+        }
+        vec![self.config.prefix.clone()]
+    }
+    /// Parse a message into a prefix-command invocation, resolving the guild's
+    /// active prefixes. The longest matching prefix wins so overlapping
+    /// prefixes (e.g. `!` and `!!`) resolve unambiguously. Returns `None` when
+    /// no prefix matches or there is no command word after it.
+    pub fn parse_command<'a>(&self, msg: &'a Message) -> Option<CommandInvocation<'a>> {
+        let content = msg.content.trim_start();
+        let prefixes = self.guild_prefixes(msg.guild_id.map(|g| g.get()));
+        let plen = prefixes
+            .iter()
+            .filter(|p| !p.is_empty() && content.starts_with(p.as_str()))
+            .map(|p| p.len())
+            .max()?;
+        let prefix = &content[..plen];
+        let body = content[plen..].trim_start();
+        let mut it = body.splitn(2, char::is_whitespace);
+        let command = it.next().filter(|c| !c.is_empty())?;
+        let args = it.next().unwrap_or("").trim();
+        Some(CommandInvocation {
+            prefix,
+            command,
+            args,
+        })
     }
     pub fn latency(&self) -> Arc<Mutex<Vec<u64>>> {
         self.latency_ms.clone()

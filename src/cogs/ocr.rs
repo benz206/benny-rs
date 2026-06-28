@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use async_trait::async_trait;
 use serenity::all::{
     Attachment, Context, CreateAllowedMentions, CreateMessage, GetMessages, Message,
@@ -60,26 +60,15 @@ impl OcrCog {
 
 #[async_trait]
 impl Cog for OcrCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        match inv.command {
+            "ocr" | "imgread" | "read" => {}
+            _ => return false,
         }
         if msg.guild_id.is_none() {
-            return;
+            return false;
         }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        match cmd {
-            "ocr" | "imgread" | "read" => {}
-            _ => return,
-        }
-        let arg = it.next().unwrap_or("").trim();
+        let arg = inv.args;
 
         // Resolve the image URL: explicit arg, then the current message's
         // attachments, then the most recent image attachment in channel history.
@@ -105,7 +94,7 @@ impl Cog for OcrCog {
                         .channel_id
                         .say(&ctx.http, "Please provide an image or url to read.")
                         .await;
-                    return;
+                    return true;
                 }
             }
         };
@@ -135,7 +124,7 @@ impl Cog for OcrCog {
                     .channel_id
                     .say(&ctx.http, "OCR service unavailable.")
                     .await;
-                return;
+                return true;
             }
         };
 
@@ -147,7 +136,7 @@ impl Cog for OcrCog {
                     .channel_id
                     .say(&ctx.http, "Failed to parse OCR response.")
                     .await;
-                return;
+                return true;
             }
         };
 
@@ -161,7 +150,7 @@ impl Cog for OcrCog {
                 .channel_id
                 .say(&ctx.http, "OCR failed to process the image.")
                 .await;
-            return;
+            return true;
         }
 
         let text = json
@@ -223,5 +212,6 @@ impl Cog for OcrCog {
                 )
                 .await;
         }
+        true
     }
 }

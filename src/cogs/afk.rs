@@ -1,6 +1,6 @@
 use super::Cog;
 use crate::entities::afk;
-use crate::state::{AfkEntry, AppState};
+use crate::state::{AfkEntry, AppState, CommandInvocation};
 use crate::utils::format::humanize_duration;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -46,29 +46,27 @@ impl Cog for AfkCog {
     }
 
     async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
         let guild_id = match msg.guild_id {
             Some(g) => g.get(),
             None => return,
         };
         let now = Utc::now().timestamp();
-
-        // `afk [message]` command — set AFK.
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if let Some(body) = content.strip_prefix(&prefix) {
-            let body = body.trim();
-            let mut it = body.splitn(2, ' ');
-            if it.next() == Some("afk") {
-                let message = it.next().unwrap_or("").trim().to_string();
-                self.set_afk(ctx, msg, guild_id, message).await;
-            }
-        }
-
-        // Run on every non-bot message.
+        // Run on every non-bot message: clear the author's own AFK and announce
+        // any mentioned AFK users. Setting AFK is the `afk` command (on_command),
+        // which the central handler dispatches after this observer.
         self.manage_afk(ctx, msg, guild_id, now).await;
+    }
+
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        if inv.command != "afk" {
+            return false;
+        }
+        let Some(guild_id) = msg.guild_id else {
+            return false;
+        };
+        self.set_afk(ctx, msg, guild_id.get(), inv.args.to_string())
+            .await;
+        true
     }
 }
 

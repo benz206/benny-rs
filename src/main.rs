@@ -332,7 +332,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut manager = CogManager::new(config.prefix.clone());
+    let mut manager = CogManager::new(app_state.clone());
     manager.register(BaseCog::new(app_state.clone()));
     manager.register(PrefixesCog::new(app_state.clone()));
     manager.register(AfkCog::new(app_state.clone()));

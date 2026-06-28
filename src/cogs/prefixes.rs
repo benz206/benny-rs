@@ -1,6 +1,6 @@
 use super::Cog;
 use crate::entities::prefixes;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::{colors, embeds, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::OnConflict;
@@ -50,17 +50,7 @@ impl PrefixesCog {
     /// empty result means the guild has no custom prefixes (the default still
     /// works via the bot's configured prefix / mention).
     async fn current_prefixes(&self, guild_id: u64) -> Vec<String> {
-        if let Some(entry) = self.state.prefix_cache.get(&guild_id) {
-            return entry.clone();
-        }
-        let rows = prefixes::Entity::find()
-            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-        let mut result: Vec<String> = rows.into_iter().map(|m| m.prefix).collect();
-        result.sort_by_key(|p| p.len());
-        result
+        self.state.custom_prefixes(guild_id).await
     }
 }
 
@@ -132,21 +122,9 @@ impl Cog for PrefixesCog {
         self.state.prefix_cache.remove(&guild_id);
     }
 
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        // splitn(3): keep the remainder intact so multi-word prefixes work.
-        let mut it = body.splitn(3, ' ');
-        let Some(cmd) = it.next() else { return };
-        if cmd != "prefix" {
-            return;
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        if inv.command != "prefix" {
+            return false;
         }
 
         let guild_id = match msg.guild_id {
@@ -156,10 +134,12 @@ impl Cog for PrefixesCog {
                     .channel_id
                     .say(&ctx.http, "This command can only be used in a server.")
                     .await;
-                return;
+                return true;
             }
         };
 
+        // splitn(2): keep the remainder intact so multi-word prefixes work.
+        let mut it = inv.args.splitn(2, ' ');
         let sub = it.next().unwrap_or("");
         let rest = it.next().unwrap_or("").trim();
 
@@ -176,7 +156,7 @@ impl Cog for PrefixesCog {
         )
         .await
         {
-            return;
+            return true;
         }
 
         match sub {
@@ -188,6 +168,7 @@ impl Cog for PrefixesCog {
             "reset" => self.cmd_reset(ctx, msg, guild_id).await,
             _ => self.send_help(ctx, msg).await,
         }
+        true
     }
 }
 

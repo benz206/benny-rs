@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::Deserialize;
@@ -233,26 +233,15 @@ impl DictionaryCog {
 
 #[async_trait]
 impl Cog for DictionaryCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        if inv.command != "define" && inv.command != "dict" && inv.command != "def" {
+            return false;
         }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        if cmd != "define" && cmd != "dict" && cmd != "def" {
-            return;
-        }
-        let word = it.next().unwrap_or("").trim();
+        let word = inv.args;
 
         if word.is_empty() {
             let _ = msg.channel_id.say(&ctx.http, "Usage: define <word>").await;
-            return;
+            return true;
         }
 
         if !word.chars().all(|c| c.is_alphabetic()) {
@@ -263,7 +252,7 @@ impl Cog for DictionaryCog {
                     "The requested definition must be alphabetic, this means no spaces or special characters",
                 )
                 .await;
-            return;
+            return true;
         }
 
         let (status, json) = match self.fetch_word(word).await {
@@ -274,7 +263,7 @@ impl Cog for DictionaryCog {
                     .channel_id
                     .say(&ctx.http, "Dictionary service unavailable.")
                     .await;
-                return;
+                return true;
             }
         };
 
@@ -292,7 +281,7 @@ impl Cog for DictionaryCog {
                 .channel_id
                 .say(&ctx.http, format!("**{title}**\n{message}"))
                 .await;
-            return;
+            return true;
         }
 
         let entry = match json.as_array().and_then(|a| a.first()) {
@@ -302,7 +291,7 @@ impl Cog for DictionaryCog {
                     .channel_id
                     .say(&ctx.http, format!("No definition found for `{word}`."))
                     .await;
-                return;
+                return true;
             }
         };
 
@@ -314,7 +303,7 @@ impl Cog for DictionaryCog {
                     .channel_id
                     .say(&ctx.http, "Failed to parse definition.")
                     .await;
-                return;
+                return true;
             }
         };
 
@@ -323,7 +312,7 @@ impl Cog for DictionaryCog {
                 .channel_id
                 .say(&ctx.http, format!("No definition found for `{word}`."))
                 .await;
-            return;
+            return true;
         }
 
         let builder = CreateMessage::new()
@@ -347,6 +336,7 @@ impl Cog for DictionaryCog {
                 tracing::error!(error = ?e, "failed to send dictionary message");
             }
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

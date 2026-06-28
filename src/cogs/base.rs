@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::format::humanize_duration;
 use crate::utils::parse::parse_user_id;
 use crate::utils::{colors, embeds};
@@ -49,21 +49,9 @@ impl BaseCog {
 
 #[async_trait]
 impl Cog for BaseCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        let arg = it.next().unwrap_or("").trim();
-
-        match cmd {
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        let arg = inv.args;
+        match inv.command {
             "ping" | "pong" => self.cmd_ping(ctx, msg).await,
             "about" => self.cmd_about(ctx, msg).await,
             "version" => self.cmd_version(ctx, msg).await,
@@ -72,8 +60,9 @@ impl Cog for BaseCog {
             "invite" => self.cmd_invite(ctx, msg).await,
             "charinfo" | "ci" | "char" => self.cmd_charinfo(ctx, msg, arg).await,
             "permissions" | "perms" => self.cmd_permissions(ctx, msg, arg).await,
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }
 

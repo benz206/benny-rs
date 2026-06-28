@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::format::truncate;
 use crate::utils::{colors, embeds, parse};
 use async_trait::async_trait;
@@ -314,21 +314,11 @@ impl EmbedCog {
 
 #[async_trait]
 impl Cog for EmbedCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        if !matches!(inv.command, "embed" | "customembed" | "cembed" | "ce") {
+            return false;
         }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(3, ' ');
-        let Some(cmd) = it.next() else { return };
-        if !matches!(cmd, "embed" | "customembed" | "cembed" | "ce") {
-            return;
-        }
+        let mut it = inv.args.splitn(2, ' ');
         let subcmd = it.next().unwrap_or("").trim();
         let arg = it.next().unwrap_or("").trim();
         let user_id = msg.author.id.get();
@@ -348,7 +338,7 @@ impl Cog for EmbedCog {
                             "Usage: `embed import <json | https://mystb.in/...>`",
                         )
                         .await;
-                    return;
+                    return true;
                 }
                 match self.parse_import(arg).await {
                     Ok(data) => self.open_builder(ctx, msg, data).await,
@@ -386,6 +376,7 @@ impl Cog for EmbedCog {
                     .await;
             }
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

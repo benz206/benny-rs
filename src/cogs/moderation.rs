@@ -1,6 +1,6 @@
 use super::Cog;
 use crate::entities::{mod_cases, mod_config, mod_timed};
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::embeds::error_embed;
 use crate::utils::parse::parse_user_id;
 use crate::utils::roles::{role_rank, top_role};
@@ -50,25 +50,13 @@ impl Cog for ModerationCog {
         tracing::info!("Moderation expiry task started");
     }
 
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         let guild_id = match msg.guild_id {
             Some(g) => g,
-            None => return,
+            None => return false,
         };
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        let rest = it.next().unwrap_or("").trim();
-
-        match cmd {
+        let rest = inv.args;
+        match inv.command {
             "warn" => self.cmd_warn(ctx, msg, guild_id, rest).await,
             "kick" => self.cmd_kick(ctx, msg, guild_id, rest).await,
             "ban" => self.cmd_ban(ctx, msg, guild_id, rest).await,
@@ -78,8 +66,9 @@ impl Cog for ModerationCog {
             "case" => self.cmd_case(ctx, msg, guild_id, rest).await,
             "cases" => self.cmd_cases(ctx, msg, guild_id, rest).await,
             "modlog" | "modlogs" => self.cmd_modlog(ctx, msg, guild_id).await,
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }
 

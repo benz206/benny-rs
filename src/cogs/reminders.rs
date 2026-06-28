@@ -1,6 +1,6 @@
 use super::Cog;
 use crate::entities::{reminders, reminders_users};
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::time::parse_when;
 use crate::utils::{colors, format};
 use async_trait::async_trait;
@@ -67,19 +67,9 @@ impl RemindersCog {
 
 #[async_trait]
 impl Cog for RemindersCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.split_whitespace();
-        let Some(cmd) = it.next() else { return };
-        let args: Vec<&str> = it.collect();
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
+        let cmd = inv.command;
+        let args: Vec<&str> = inv.args.split_whitespace().collect();
 
         match cmd {
             "remind" | "remindme" => self.cmd_create(ctx, msg, &args.join(" ")).await,
@@ -106,8 +96,9 @@ impl Cog for RemindersCog {
                         .await;
                 }
             },
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::colors;
 use crate::utils::embeds::error_embed;
 use async_trait::async_trait;
@@ -37,26 +37,15 @@ impl DevCog {
 
 #[async_trait]
 impl Cog for DevCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         // Owner-only enforcement on every dev command.
         if !self.state.is_owner(msg.author.id.get()) {
-            return;
+            return false;
         }
-
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
+        if inv.command != "dev" {
+            return false;
         }
-        let body = content[prefix.len()..].trim();
-        let (cmd, after) = split_first(body);
-        if cmd != "dev" {
-            return;
-        }
-        let (subcmd, rest) = split_first(after);
+        let (subcmd, rest) = split_first(inv.args);
 
         match subcmd {
             "sysinfo" | "sys" | "system" => self.cmd_system(ctx, msg).await,
@@ -99,6 +88,7 @@ impl Cog for DevCog {
             }
             _ => self.cmd_help(ctx, msg).await,
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {

@@ -1,5 +1,5 @@
 use super::Cog;
-use crate::state::AppState;
+use crate::state::{AppState, CommandInvocation};
 use crate::utils::colors;
 use crate::utils::embeds::error_embed;
 use crate::utils::format::loading_bar;
@@ -103,25 +103,13 @@ fn resolve_role<'a>(roles: &'a HashMap<RoleId, Role>, token: &str) -> Option<&'a
 
 #[async_trait]
 impl Cog for RolesCog {
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
-        if msg.author.bot {
-            return;
-        }
+    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
         let guild_id = match msg.guild_id {
             Some(g) => g,
-            None => return,
+            None => return false,
         };
-        let content = msg.content.trim();
-        let prefix = self.state.prefix().to_string();
-        if !content.starts_with(&prefix) {
-            return;
-        }
-        let body = content[prefix.len()..].trim();
-        let mut it = body.splitn(2, ' ');
-        let Some(cmd) = it.next() else { return };
-        let rest = it.next().unwrap_or("").trim();
-
-        match cmd {
+        let rest = inv.args;
+        match inv.command {
             // Top-level bulk command: `roleall <role>` / `roleall remove <role>`.
             "roleall" => {
                 let (action, role_token) = parse_bulk_args(rest);
@@ -153,8 +141,9 @@ impl Cog for RolesCog {
                     }
                 }
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
