@@ -1,10 +1,6 @@
 use anyhow::Result;
-use serenity::all::{
-    ChannelId, Client, Context, EventHandler, GatewayIntents, Guild, GuildChannel, GuildId,
-    Interaction, Member, Message, MessageId, Reaction, Ready, Role, RoleId, UnavailableGuild, User,
-    VoiceState,
-};
-use serenity::model::event::{GuildMemberUpdateEvent, MessageUpdateEvent, VoiceServerUpdateEvent};
+use serenity::all::{ClientBuilder, GatewayIntents, GuildId};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -12,9 +8,9 @@ mod cogs;
 mod config;
 mod entities;
 mod error;
+mod framework;
 mod http;
 mod migrations;
-mod slash;
 mod state;
 mod tagscript;
 mod tasks;
@@ -142,196 +138,8 @@ async fn main() -> Result<()> {
         settings::SettingsCog, tags::TagsCog, translate::TranslateCog, welcome::WelcomeCog,
     };
 
-    struct Handler {
-        cogs: Arc<CogManager>,
-        state: Arc<AppState>,
-        translate: Arc<TranslateCog>,
-        reminder_task_started: std::sync::atomic::AtomicBool,
-    }
-
-    #[serenity::async_trait]
-    impl EventHandler for Handler {
-        async fn ready(&self, ctx: Context, ready: Ready) {
-            info!("connected as {} ({})", ready.user.name, ready.user.id);
-            info!("===========================================");
-            info!("  benny-rs v{}", env!("CARGO_PKG_VERSION"));
-            info!("  Guilds: {}", ctx.cache.guilds().len());
-            info!("===========================================");
-            self.cogs.dispatch_ready(&ctx).await;
-            slash::register_global(&ctx).await;
-
-            // Connect to Lavalink exactly once and store the client in shared state.
-            if self.state.lavalink.get().is_none() {
-                let client = cogs::music::connect_lavalink(&self.state, ready.user.id).await;
-                let _ = self.state.lavalink.set(client);
-            }
-
-            // Spawn reminder background task exactly once
-            if !self
-                .reminder_task_started
-                .swap(true, std::sync::atomic::Ordering::SeqCst)
-            {
-                tasks::reminders::spawn_reminder_task(self.state.clone(), ctx.http.clone());
-            }
-        }
-
-        async fn message(&self, ctx: Context, msg: Message) {
-            if msg.author.bot {
-                return;
-            }
-            self.cogs.dispatch_message(&ctx, &msg).await;
-        }
-
-        async fn guild_member_addition(&self, ctx: Context, member: Member) {
-            self.cogs.dispatch_member_join(&ctx, &member).await;
-        }
-
-        async fn guild_member_removal(
-            &self,
-            ctx: Context,
-            guild_id: GuildId,
-            user: User,
-            _member: Option<Member>,
-        ) {
-            self.cogs.dispatch_member_leave(&ctx, guild_id, &user).await;
-        }
-
-        async fn message_update(
-            &self,
-            ctx: Context,
-            old: Option<Message>,
-            new: Option<Message>,
-            event: MessageUpdateEvent,
-        ) {
-            self.cogs
-                .dispatch_message_update(&ctx, old, new, &event)
-                .await;
-        }
-
-        async fn message_delete(
-            &self,
-            ctx: Context,
-            channel_id: ChannelId,
-            msg_id: MessageId,
-            guild_id: Option<GuildId>,
-        ) {
-            self.cogs
-                .dispatch_message_delete(&ctx, channel_id, msg_id, guild_id)
-                .await;
-        }
-
-        async fn reaction_add(&self, ctx: Context, reaction: Reaction) {
-            self.cogs.dispatch_reaction_add(&ctx, reaction).await;
-        }
-
-        async fn guild_create(&self, ctx: Context, guild: Guild, _is_new: Option<bool>) {
-            self.cogs.dispatch_guild_create(&ctx, &guild).await;
-        }
-
-        async fn guild_delete(
-            &self,
-            ctx: Context,
-            incomplete: UnavailableGuild,
-            full: Option<Guild>,
-        ) {
-            self.cogs
-                .dispatch_guild_delete(&ctx, incomplete, full)
-                .await;
-        }
-
-        async fn guild_member_update(
-            &self,
-            ctx: Context,
-            old: Option<Member>,
-            new: Option<Member>,
-            event: GuildMemberUpdateEvent,
-        ) {
-            self.cogs
-                .dispatch_member_update(&ctx, old, new, &event)
-                .await;
-        }
-
-        async fn guild_ban_addition(&self, ctx: Context, guild_id: GuildId, banned_user: User) {
-            self.cogs
-                .dispatch_member_ban(&ctx, guild_id, &banned_user)
-                .await;
-        }
-
-        async fn guild_ban_removal(&self, ctx: Context, guild_id: GuildId, unbanned_user: User) {
-            self.cogs
-                .dispatch_member_unban(&ctx, guild_id, &unbanned_user)
-                .await;
-        }
-
-        async fn channel_create(&self, ctx: Context, channel: GuildChannel) {
-            self.cogs.dispatch_channel_create(&ctx, &channel).await;
-        }
-
-        async fn channel_delete(
-            &self,
-            ctx: Context,
-            channel: GuildChannel,
-            _messages: Option<Vec<Message>>,
-        ) {
-            self.cogs.dispatch_channel_delete(&ctx, &channel).await;
-        }
-
-        async fn guild_role_create(&self, ctx: Context, new: Role) {
-            self.cogs.dispatch_role_create(&ctx, &new).await;
-        }
-
-        async fn guild_role_delete(
-            &self,
-            ctx: Context,
-            guild_id: GuildId,
-            removed_role_id: RoleId,
-            removed_role_data: Option<Role>,
-        ) {
-            self.cogs
-                .dispatch_role_delete(&ctx, guild_id, removed_role_id, removed_role_data)
-                .await;
-        }
-
-        async fn thread_create(&self, ctx: Context, thread: GuildChannel) {
-            self.cogs.dispatch_thread_create(&ctx, &thread).await;
-        }
-
-        async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
-            // Forward to lavalink-rs so it can build voice connection info.
-            if let (Some(lava), Some(guild_id)) = (self.state.lavalink.get(), new.guild_id) {
-                lava.handle_voice_state_update(
-                    guild_id,
-                    new.channel_id,
-                    new.user_id,
-                    new.session_id.clone(),
-                );
-            }
-            self.cogs.dispatch_voice_state_update(&ctx, old, &new).await;
-        }
-
-        async fn voice_server_update(&self, _ctx: Context, event: VoiceServerUpdateEvent) {
-            // Forward to lavalink-rs so it can build voice connection info.
-            if let (Some(lava), Some(guild_id)) = (self.state.lavalink.get(), event.guild_id) {
-                lava.handle_voice_server_update(guild_id, event.token, event.endpoint);
-            }
-        }
-
-        async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-            match &interaction {
-                Interaction::Command(_) | Interaction::Autocomplete(_) => {
-                    slash::handle_interaction(&ctx, &interaction, &self.translate).await;
-                }
-                Interaction::Component(c) => {
-                    self.cogs.dispatch_component(&ctx, c).await;
-                }
-                Interaction::Modal(m) => {
-                    self.cogs.dispatch_modal(&ctx, m).await;
-                }
-                _ => {}
-            }
-        }
-    }
-
+    // Cogs own the gateway-event hooks (AFK, sentinel, logging, welcome, ...);
+    // poise owns command dispatch. Both share the same `Arc<AppState>`.
     let mut manager = CogManager::new(app_state.clone());
     manager.register(BaseCog::new(app_state.clone()));
     manager.register(PrefixesCog::new(app_state.clone()));
@@ -345,8 +153,7 @@ async fn main() -> Result<()> {
     manager.register(InfoCog::new(app_state.clone()));
     manager.register(HelpCog::new(app_state.clone()));
     manager.register(RolesCog::new(app_state.clone()));
-    let translate_cog = TranslateCog::new(app_state.clone());
-    manager.register(translate_cog.clone());
+    manager.register(TranslateCog::new(app_state.clone()));
     manager.register(DictionaryCog::new(app_state.clone()));
     manager.register(OcrCog::new(app_state.clone()));
     manager.register(EmbedCog::new(app_state.clone()));
@@ -357,25 +164,89 @@ async fn main() -> Result<()> {
     manager.register(EventsCog::new(app_state.clone()));
     let manager = Arc::new(manager);
 
+    let owners: HashSet<serenity::all::UserId> = config
+        .owners
+        .iter()
+        .map(|&id| serenity::all::UserId::new(id))
+        .collect();
+
+    let options = poise::FrameworkOptions {
+        commands: framework::all_commands(),
+        owners,
+        prefix_options: poise::PrefixFrameworkOptions {
+            // Guild-aware longest-match prefix; falls back to the global default.
+            stripped_dynamic_prefix: Some(|ctx, msg, data| {
+                framework::dynamic_prefix(ctx, msg, data)
+            }),
+            case_insensitive_commands: true,
+            ..Default::default()
+        },
+        event_handler: |ctx, event, fw, data| {
+            Box::pin(framework::event_handler(ctx, event, fw, data))
+        },
+        on_error: |error| Box::pin(framework::on_error(error)),
+        pre_command: |ctx| Box::pin(framework::pre_command(ctx)),
+        ..Default::default()
+    };
+
+    // Slash commands register to the support guild in debug builds (instant) and
+    // globally in release (up to ~1h to propagate).
+    let support_guild = config.support_guild;
+    // app_state is moved into the framework setup closure below; keep a clone
+    // for the HTTP server.
+    let state_for_http = app_state.clone();
+    let poise_framework = poise::Framework::builder()
+        .options(options)
+        .setup(move |ctx, ready, fw| {
+            let state = app_state.clone();
+            let cogs = manager.clone();
+            Box::pin(async move {
+                info!("connected as {} ({})", ready.user.name, ready.user.id);
+                info!("===========================================");
+                info!("  benny-rs v{}", env!("CARGO_PKG_VERSION"));
+                info!("  Guilds: {}", ctx.cache.guilds().len());
+                info!("===========================================");
+
+                if cfg!(debug_assertions) && let Some(gid) = support_guild {
+                    poise::builtins::register_in_guild(
+                        ctx,
+                        &fw.options().commands,
+                        GuildId::new(gid),
+                    )
+                    .await?;
+                    info!("registered slash commands in support guild {gid}");
+                } else {
+                    poise::builtins::register_globally(ctx, &fw.options().commands).await?;
+                    info!("registered slash commands globally");
+                }
+
+                // Connect to Lavalink exactly once and store the client in shared state.
+                if state.lavalink.get().is_none() {
+                    let client = cogs::music::connect_lavalink(&state, ready.user.id).await;
+                    let _ = state.lavalink.set(client);
+                }
+
+                tasks::reminders::spawn_reminder_task(state.clone(), ctx.http.clone());
+
+                Ok(framework::Data { state, cogs })
+            })
+        })
+        .build();
+
     // Keep a bounded message cache so logging can show edited/deleted content.
     let mut cache_settings = serenity::cache::Settings::default();
     cache_settings.max_messages = 1000;
 
-    let mut client = Client::builder(token, intents)
+    let mut client = ClientBuilder::new(token, intents)
         .cache_settings(cache_settings)
-        .event_handler(Handler {
-            cogs: manager.clone(),
-            translate: translate_cog.clone(),
-            state: app_state.clone(),
-            reminder_task_started: std::sync::atomic::AtomicBool::new(false),
-        })
+        .framework(poise_framework)
         .await
         .map_err(|e| {
             error!(error = ?e, "failed to create serenity client");
             anyhow::anyhow!(e)
         })?;
 
-    let api = http::router(app_state.clone());
+    let api = http::router(state_for_http);
     tokio::spawn(http::serve(api, "127.0.0.1:8080".parse().unwrap()));
 
     if let Err(e) = client.start().await {
