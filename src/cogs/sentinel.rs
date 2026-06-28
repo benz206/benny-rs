@@ -1,18 +1,19 @@
 use super::Cog;
 use crate::entities::{sentinel_config, sentinels_decancer};
-use crate::state::{AppState, CommandInvocation, SentinelConfig};
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::{AppState, SentinelConfig};
 use crate::utils::{colors, embeds, parse, perms};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    ActionRowComponent, ButtonStyle, ChannelId, ComponentInteraction, Context, CreateActionRow,
+    ActionRowComponent, ButtonStyle, Channel, ChannelId, ComponentInteraction, CreateActionRow,
     CreateButton, CreateEmbed, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateMessage, CreateModal, EditMember, GetMessages, GuildId,
-    InputTextStyle, Member, Message, ModalInteraction, Permissions, Timestamp, UserId,
+    InputTextStyle, Member, Message, ModalInteraction, Permissions, Timestamp,
 };
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// custom_id namespace for this cog's interactive components. `on_component` and
 /// `on_modal` are fanned out to every cog, so we early-return unless the id
@@ -34,7 +35,7 @@ const CATEGORIES: [(&str, &str); 7] = [
     ("sexual_explicit", "Sexual Explicit"),
 ];
 
-/// Per-guild decancer settings. Kept in an internal cache because `AppState` has
+/// Per-guild decancer settings. Kept in a module static because `AppState` has
 /// no `decancer_cache` field.
 #[derive(Debug, Clone, Copy)]
 struct DecancerConfig {
@@ -42,29 +43,24 @@ struct DecancerConfig {
     log_channel_id: Option<i64>,
 }
 
+/// Per-guild "delete flagged messages" toggle, hydrated from the DB at ready.
+static DELETE_FLAGS: LazyLock<DashMap<u64, bool>> = LazyLock::new(DashMap::new);
+/// Per-guild decancer config, hydrated from the DB at ready.
+static DECANCER_CACHE: LazyLock<DashMap<u64, DecancerConfig>> = LazyLock::new(DashMap::new);
+
 pub struct SentinelCog {
     state: Arc<AppState>,
-    /// Per-guild "delete flagged messages" toggle. Not part of `SentinelConfig`
-    /// (state.rs), so kept here, hydrated from a `delete_flagged` column added
-    /// idempotently in `on_ready`.
-    delete_flags: DashMap<u64, bool>,
-    /// Per-guild decancer config.
-    decancer_cache: DashMap<u64, DecancerConfig>,
 }
 
 impl SentinelCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self {
-            state,
-            delete_flags: DashMap::new(),
-            decancer_cache: DashMap::new(),
-        })
+        Arc::new(Self { state })
     }
 }
 
 #[async_trait]
 impl Cog for SentinelCog {
-    async fn on_ready(&self, _ctx: &Context) {
+    async fn on_ready(&self, _ctx: &serenity::all::Context) {
         // Load sentinel configs.
         let rows = sentinel_config::Entity::find()
             .all(self.state.servers_orm())
@@ -86,8 +82,7 @@ impl Cog for SentinelCog {
                     sexual_explicit: m.sexual_explicit,
                 },
             );
-            self.delete_flags
-                .insert(m.guild_id as u64, m.delete_flagged);
+            DELETE_FLAGS.insert(m.guild_id as u64, m.delete_flagged);
         }
 
         // Load decancer configs.
@@ -96,7 +91,7 @@ impl Cog for SentinelCog {
             .await
             .unwrap_or_default();
         for m in drows {
-            self.decancer_cache.insert(
+            DECANCER_CACHE.insert(
                 m.guild_id as u64,
                 DecancerConfig {
                     enabled: m.enabled,
@@ -108,20 +103,18 @@ impl Cog for SentinelCog {
         tracing::info!("Sentinel + decancer configs loaded");
     }
 
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
+    async fn on_message(&self, ctx: &serenity::all::Context, msg: &Message) {
         let guild_id = match msg.guild_id {
             Some(g) => g.get(),
             None => return,
         };
 
-        // Never scan prefix commands for toxicity — a prefixed message (any of
-        // the guild's prefixes) is some cog's command, not chatter.
+        // Never scan prefix commands for toxicity.
         if self.state.parse_command(msg).is_some() {
             return;
         }
 
-        // Toxicity scan: only for sufficiently long messages in a
-        // sentinel-enabled guild (minimum 25 characters).
+        // Only scan sufficiently long messages in sentinel-enabled guilds.
         if msg.content.chars().count() <= 25 {
             return;
         }
@@ -136,31 +129,9 @@ impl Cog for SentinelCog {
             .await;
     }
 
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        let guild_id = match msg.guild_id {
-            Some(g) => g.get(),
-            None => return false,
-        };
-        let mut it = inv.args.splitn(2, ' ');
-        match inv.command {
-            "sentinel" => {
-                let sub = it.next().unwrap_or("");
-                let arg = it.next().unwrap_or("").trim();
-                self.handle_sentinel_cmd(ctx, msg, guild_id, sub, arg).await;
-            }
-            "decancer" => {
-                let sub = it.next().unwrap_or("");
-                let arg = it.next().unwrap_or("").trim();
-                self.handle_decancer_cmd(ctx, msg, guild_id, sub, arg).await;
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    async fn on_member_join(&self, ctx: &Context, member: &Member) {
+    async fn on_member_join(&self, ctx: &serenity::all::Context, member: &Member) {
         let guild_id = member.guild_id.get();
-        let cfg = match self.decancer_cache.get(&guild_id) {
+        let cfg = match DECANCER_CACHE.get(&guild_id) {
             Some(c) if c.enabled => *c,
             _ => return,
         };
@@ -197,7 +168,11 @@ impl Cog for SentinelCog {
         }
     }
 
-    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+    async fn on_component(
+        &self,
+        ctx: &serenity::all::Context,
+        interaction: &ComponentInteraction,
+    ) {
         let cid = interaction.data.custom_id.as_str();
         if !cid.starts_with(ID_PREFIX) {
             return;
@@ -214,8 +189,8 @@ impl Cog for SentinelCog {
             .map(|c| c.clone())
             .unwrap_or_else(default_config);
 
-        // The config buttons are visible to anyone in the channel; only let a
-        // member with Manage Server actually open the threshold editor.
+        // Config buttons are visible to anyone in the channel; only members
+        // with Manage Server may actually open the threshold editor.
         if !perms::has_perm(
             ctx,
             GuildId::new(guild_id),
@@ -231,7 +206,7 @@ impl Cog for SentinelCog {
                         CreateInteractionResponseMessage::new()
                             .ephemeral(true)
                             .content(
-                                "You need the **Manage Server** permission to configure Sentinel.",
+                                "You need **Manage Server** permission to configure Sentinel.",
                             ),
                     ),
                 )
@@ -250,7 +225,7 @@ impl Cog for SentinelCog {
             .await;
     }
 
-    async fn on_modal(&self, ctx: &Context, interaction: &ModalInteraction) {
+    async fn on_modal(&self, ctx: &serenity::all::Context, interaction: &ModalInteraction) {
         let cid = interaction.data.custom_id.as_str();
         if !cid.starts_with(ID_PREFIX) {
             return;
@@ -285,7 +260,7 @@ impl Cog for SentinelCog {
             return;
         }
 
-        // Flatten the submitted input rows into (custom_id, value) pairs.
+        // Flatten submitted input rows into (custom_id, value) pairs.
         let mut inputs: Vec<(String, String)> = Vec::new();
         for row in &interaction.data.components {
             for comp in &row.components {
@@ -304,12 +279,12 @@ impl Cog for SentinelCog {
             }
             if key == "log_channel" {
                 if let Some(c) = parse::parse_channel_id(&val) {
-                    self.set_log_channel(guild_id, c as i64).await;
+                    set_log_channel(&self.state, guild_id, c as i64).await;
                     updated.push("log channel".to_string());
                 }
             } else if let Some((col, _)) = CATEGORIES.iter().find(|(k, _)| *k == key) {
                 if let Some(v) = parse_threshold(&val) {
-                    self.set_threshold(guild_id, col, v).await;
+                    set_threshold(&self.state, guild_id, col, v).await;
                     updated.push(format!("{col} = {v:.2}"));
                 }
             }
@@ -337,11 +312,9 @@ impl Cog for SentinelCog {
 }
 
 impl SentinelCog {
-    // ---- Toxicity scanning ------------------------------------------------
-
     async fn check_toxicity(
         &self,
-        ctx: &Context,
+        ctx: &serenity::all::Context,
         msg: &Message,
         guild_id: u64,
         config: &SentinelConfig,
@@ -443,577 +416,606 @@ impl SentinelCog {
             .await;
 
         // Optionally delete the offending message.
-        if self
-            .delete_flags
-            .get(&guild_id)
-            .map(|b| *b)
-            .unwrap_or(false)
-        {
+        if DELETE_FLAGS.get(&guild_id).map(|b| *b).unwrap_or(false) {
             let _ = msg.delete(&ctx.http).await;
         }
     }
+}
 
-    // ---- Sentinel management commands -------------------------------------
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![sentinel(), decancer()]
+}
 
-    async fn handle_sentinel_cmd(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        guild_id: u64,
-        subcmd: &str,
-        arg: &str,
-    ) {
-        // Every Sentinel subcommand configures the automod (the `config` panel
-        // itself opens threshold editors), so all require Manage Server.
-        if !perms::require_perm(
-            ctx,
-            msg,
-            GuildId::new(guild_id),
-            Permissions::MANAGE_GUILD,
-            "Manage Server",
-        )
-        .await
-        {
-            return;
-        }
-        match subcmd {
-            "enable" => {
-                let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
-                    guild_id: Set(guild_id as i64),
-                    enabled: Set(true),
-                    ..Default::default()
-                })
-                .on_conflict(
-                    OnConflict::column(sentinel_config::Column::GuildId)
-                        .update_column(sentinel_config::Column::Enabled)
-                        .to_owned(),
-                )
-                .exec(self.state.servers_orm())
-                .await;
-                {
-                    let mut e = self
-                        .state
-                        .sentinel_cache
-                        .entry(guild_id)
-                        .or_insert_with(default_config);
-                    e.enabled = true;
-                }
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::success_embed(
-                            "Sentinel Enabled",
-                            "Messages will now be scanned for toxicity.",
-                        )),
-                    )
-                    .await;
-            }
-            "disable" => {
-                let _ = sentinel_config::Entity::update_many()
-                    .col_expr(sentinel_config::Column::Enabled, Expr::value(false))
-                    .filter(sentinel_config::Column::GuildId.eq(guild_id as i64))
-                    .exec(self.state.servers_orm())
-                    .await;
-                if let Some(mut e) = self.state.sentinel_cache.get_mut(&guild_id) {
-                    e.enabled = false;
-                }
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::success_embed(
-                            "Sentinel Disabled",
-                            "Toxicity scanning is off.",
-                        )),
-                    )
-                    .await;
-            }
-            "channel" => {
-                let cid = match parse::parse_channel_id(arg) {
-                    Some(c) => c,
-                    None => {
-                        let _ = msg
-                            .channel_id
-                            .say(&ctx.http, "Usage: sentinel channel <#channel>")
-                            .await;
-                        return;
-                    }
-                };
-                self.set_log_channel(guild_id, cid as i64).await;
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::success_embed(
-                            "Sentinel Log Channel Set",
-                            &format!("Alerts will be sent to <#{cid}>."),
-                        )),
-                    )
-                    .await;
-            }
-            "threshold" => {
-                let mut parts = arg.splitn(2, ' ');
-                let category = parts.next().unwrap_or("").trim();
-                let value: f64 = match parts.next().and_then(parse_threshold) {
-                    Some(v) => v,
-                    None => {
-                        let _ = msg
-                            .channel_id
-                            .say(&ctx.http, "Usage: sentinel threshold <category> <0.0-1.0>")
-                            .await;
-                        return;
-                    }
-                };
-                let col = match category {
-                    "toxicity" => "toxicity",
-                    "severe_toxicity" | "severe" => "severe_toxicity",
-                    "obscene" => "obscene",
-                    "threat" => "threat",
-                    "insult" => "insult",
-                    "identity_attack" | "identity" => "identity_attack",
-                    "sexual_explicit" | "sexual" => "sexual_explicit",
-                    _ => {
-                        let _ = msg
-                            .channel_id
-                            .say(
-                                &ctx.http,
-                                "Invalid category. Use: toxicity, severe_toxicity, obscene, threat, insult, identity_attack, sexual_explicit",
-                            )
-                            .await;
-                        return;
-                    }
-                };
-                self.set_threshold(guild_id, col, value).await;
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::success_embed(
-                            "Threshold Updated",
-                            &format!("`{col}` threshold set to {value:.2}."),
-                        )),
-                    )
-                    .await;
-            }
-            "delete" => {
-                let on = matches!(arg, "on" | "true" | "enable" | "1" | "yes");
-                let off = matches!(arg, "off" | "false" | "disable" | "0" | "no");
-                if !on && !off {
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "Usage: sentinel delete <on|off>")
-                        .await;
-                    return;
-                }
-                let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
-                    guild_id: Set(guild_id as i64),
-                    delete_flagged: Set(on),
-                    ..Default::default()
-                })
-                .on_conflict(
-                    OnConflict::column(sentinel_config::Column::GuildId)
-                        .update_column(sentinel_config::Column::DeleteFlagged)
-                        .to_owned(),
-                )
-                .exec(self.state.servers_orm())
-                .await;
-                self.delete_flags.insert(guild_id, on);
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::success_embed(
-                            "Sentinel Delete Updated",
-                            &format!(
-                                "Flagged messages will {} be deleted.",
-                                if on { "now" } else { "no longer" }
-                            ),
-                        )),
-                    )
-                    .await;
-            }
-            "config" => {
-                self.cmd_config(ctx, msg, guild_id).await;
-            }
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        "Usage: `sentinel enable` | `disable` | `channel <#channel>` | `threshold <category> <0.0-1.0>` | `delete <on|off>` | `config`",
-                    )
-                    .await;
-            }
-        }
-    }
+// ---- sentinel command group ------------------------------------------------
 
-    /// Send the config overview embed with the `SentinelConfigView` buttons.
-    async fn cmd_config(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        let config = self
-            .state
+/// Configure the Sentinel toxicity automod.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    subcommand_required,
+    category = "Sentinel",
+    subcommands(
+        "sentinel_enable",
+        "sentinel_disable",
+        "sentinel_channel",
+        "sentinel_threshold",
+        "sentinel_delete",
+        "sentinel_config"
+    )
+)]
+async fn sentinel(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Enable Sentinel toxicity scanning in this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "enable"
+)]
+async fn sentinel_enable(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+
+    let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
+        guild_id: Set(guild_id as i64),
+        enabled: Set(true),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::column(sentinel_config::Column::GuildId)
+            .update_column(sentinel_config::Column::Enabled)
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+    {
+        let mut e = state
             .sentinel_cache
-            .get(&guild_id)
-            .map(|c| c.clone())
-            .unwrap_or_else(default_config);
+            .entry(guild_id)
+            .or_insert_with(default_config);
+        e.enabled = true;
+    }
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Sentinel Enabled",
+            "Messages will now be scanned for toxicity.",
+        ),
+    )
+    .await
+}
 
-        let channel = config
-            .log_channel_id
-            .map(|c| format!("<#{c}>"))
-            .unwrap_or_else(|| "Not set".to_string());
-        let delete_flagged = self
-            .delete_flags
-            .get(&guild_id)
-            .map(|b| *b)
-            .unwrap_or(false);
+/// Disable Sentinel toxicity scanning in this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "disable"
+)]
+async fn sentinel_disable(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
 
-        let desc = format!(
-            "**Enabled:** {}\n**Log Channel:** {}\n**Delete Flagged:** {}\n\n\
-             **Toxicity:** {:.2}\n**Severe Toxicity:** {:.2}\n**Obscene:** {:.2}\n\
-             **Identity Attack:** {:.2}\n**Insult:** {:.2}\n**Threat:** {:.2}\n**Sexual Explicit:** {:.2}",
-            config.enabled,
-            channel,
-            delete_flagged,
-            config.toxicity,
-            config.severe_toxicity,
-            config.obscene,
-            config.identity_attack,
-            config.insult,
-            config.threat,
-            config.sexual_explicit,
-        );
-        let embed = CreateEmbed::new()
-            .title("Sentinel Config")
-            .description(desc)
+    let _ = sentinel_config::Entity::update_many()
+        .col_expr(sentinel_config::Column::Enabled, Expr::value(false))
+        .filter(sentinel_config::Column::GuildId.eq(guild_id as i64))
+        .exec(state.servers_orm())
+        .await;
+    if let Some(mut e) = state.sentinel_cache.get_mut(&guild_id) {
+        e.enabled = false;
+    }
+    send_embed(
+        ctx,
+        embeds::success_embed("Sentinel Disabled", "Toxicity scanning is off."),
+    )
+    .await
+}
+
+/// Set the channel where Sentinel alerts are sent.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "channel"
+)]
+async fn sentinel_channel(
+    ctx: Context<'_>,
+    #[description = "Channel for Sentinel alerts"] channel: Channel,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+    let cid = channel.id().get() as i64;
+
+    set_log_channel(state, guild_id, cid).await;
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Sentinel Log Channel Set",
+            &format!("Alerts will be sent to <#{cid}>."),
+        ),
+    )
+    .await
+}
+
+/// Set a toxicity threshold for a specific category (0.0–1.0 or 0–100).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "threshold"
+)]
+async fn sentinel_threshold(
+    ctx: Context<'_>,
+    #[description = "Category: toxicity, severe_toxicity, obscene, threat, insult, identity_attack, sexual_explicit"]
+    category: String,
+    #[description = "Threshold value (0.0–1.0 or 0–100)"] value: f64,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+
+    let col = match category.trim() {
+        "toxicity" => "toxicity",
+        "severe_toxicity" | "severe" => "severe_toxicity",
+        "obscene" => "obscene",
+        "threat" => "threat",
+        "insult" => "insult",
+        "identity_attack" | "identity" => "identity_attack",
+        "sexual_explicit" | "sexual" => "sexual_explicit",
+        _ => {
+            return send_error(
+                ctx,
+                "Invalid category. Use: toxicity, severe_toxicity, obscene, threat, insult, identity_attack, sexual_explicit",
+            )
+            .await;
+        }
+    };
+
+    let v = match parse_threshold(&value.to_string()) {
+        Some(v) => v,
+        None => {
+            return send_error(
+                ctx,
+                "Invalid threshold value. Use a number between 0.0 and 1.0 (or 0 and 100).",
+            )
+            .await;
+        }
+    };
+
+    set_threshold(state, guild_id, col, v).await;
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Threshold Updated",
+            &format!("`{col}` threshold set to {v:.2}."),
+        ),
+    )
+    .await
+}
+
+/// Enable or disable automatic deletion of flagged messages.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "delete"
+)]
+async fn sentinel_delete(
+    ctx: Context<'_>,
+    #[description = "Delete flagged messages"] enabled: bool,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+
+    let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
+        guild_id: Set(guild_id as i64),
+        delete_flagged: Set(enabled),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::column(sentinel_config::Column::GuildId)
+            .update_column(sentinel_config::Column::DeleteFlagged)
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+    DELETE_FLAGS.insert(guild_id, enabled);
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Sentinel Delete Updated",
+            &format!(
+                "Flagged messages will {} be deleted.",
+                if enabled { "now" } else { "no longer" }
+            ),
+        ),
+    )
+    .await
+}
+
+/// Show the current Sentinel configuration with threshold editor buttons.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "config"
+)]
+async fn sentinel_config(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+
+    let config = state
+        .sentinel_cache
+        .get(&guild_id)
+        .map(|c| c.clone())
+        .unwrap_or_else(default_config);
+
+    let channel = config
+        .log_channel_id
+        .map(|c| format!("<#{c}>"))
+        .unwrap_or_else(|| "Not set".to_string());
+    let delete_flagged = DELETE_FLAGS.get(&guild_id).map(|b| *b).unwrap_or(false);
+
+    let desc = format!(
+        "**Enabled:** {}\n**Log Channel:** {}\n**Delete Flagged:** {}\n\n\
+         **Toxicity:** {:.2}\n**Severe Toxicity:** {:.2}\n**Obscene:** {:.2}\n\
+         **Identity Attack:** {:.2}\n**Insult:** {:.2}\n**Threat:** {:.2}\n**Sexual Explicit:** {:.2}",
+        config.enabled,
+        channel,
+        delete_flagged,
+        config.toxicity,
+        config.severe_toxicity,
+        config.obscene,
+        config.identity_attack,
+        config.insult,
+        config.threat,
+        config.sexual_explicit,
+    );
+    let embed = CreateEmbed::new()
+        .title("Sentinel Config")
+        .description(desc)
+        .color(colors::RED)
+        .timestamp(Timestamp::now());
+
+    let buttons = CreateActionRow::Buttons(vec![
+        CreateButton::new(BTN_THRESH_A)
+            .label("Edit Thresholds (1/2)")
+            .style(ButtonStyle::Primary),
+        CreateButton::new(BTN_THRESH_B)
+            .label("Edit Thresholds (2/2) + Channel")
+            .style(ButtonStyle::Primary),
+    ]);
+
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(embed)
+            .components(vec![buttons]),
+    )
+    .await?;
+    Ok(())
+}
+
+// ---- decancer command group ------------------------------------------------
+
+/// Configure the Decancer automatic nickname cleaner.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    subcommand_required,
+    category = "Sentinel",
+    subcommands(
+        "decancer_enable",
+        "decancer_disable",
+        "decancer_logs",
+        "decancer_user"
+    )
+)]
+async fn decancer(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Enable automatic nickname cleaning for new members.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "enable"
+)]
+async fn decancer_enable(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+
+    set_decancer_enabled(state, guild_id, true).await;
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Enabled Decancer",
+            "New members' nicknames will be automatically cleaned. Consider setting `decancer logs <#channel>`.",
+        ),
+    )
+    .await
+}
+
+/// Disable automatic nickname cleaning for new members.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "disable"
+)]
+async fn decancer_disable(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+
+    set_decancer_enabled(state, guild_id, false).await;
+    send_embed(
+        ctx,
+        CreateEmbed::new()
+            .title("Disabled Decancer")
+            .description(
+                "Automatic nickname cleaning is off. Consider re-enabling this feature!",
+            )
             .color(colors::RED)
-            .timestamp(Timestamp::now());
+            .timestamp(Timestamp::now()),
+    )
+    .await
+}
 
-        let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(BTN_THRESH_A)
-                .label("Edit Thresholds (1/2)")
-                .style(ButtonStyle::Primary),
-            CreateButton::new(BTN_THRESH_B)
-                .label("Edit Thresholds (2/2) + Channel")
-                .style(ButtonStyle::Primary),
-        ]);
+/// Set the channel where Decancer actions are logged.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "logs"
+)]
+async fn decancer_logs(
+    ctx: Context<'_>,
+    #[description = "Log channel (defaults to current channel)"] channel: Option<Channel>,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let guild_id = ctx.guild_id().unwrap().get();
+    let cid = channel
+        .map(|c| c.id().get())
+        .unwrap_or_else(|| ctx.channel_id().get());
 
-        let _ = msg
-            .channel_id
-            .send_message(
-                &ctx.http,
-                CreateMessage::new()
-                    .embed(embed)
-                    .components(vec![buttons])
-                    .reference_message(msg),
+    ensure_decancer_row(state, guild_id).await;
+    let _ = sentinels_decancer::Entity::update_many()
+        .col_expr(
+            sentinels_decancer::Column::LogChannelId,
+            Expr::value(cid as i64),
+        )
+        .filter(sentinels_decancer::Column::GuildId.eq(guild_id as i64))
+        .exec(state.servers_orm())
+        .await;
+    {
+        let mut e = DECANCER_CACHE.entry(guild_id).or_insert(DecancerConfig {
+            enabled: false,
+            log_channel_id: None,
+        });
+        e.log_channel_id = Some(cid as i64);
+    }
+    let enabled = DECANCER_CACHE.get(&guild_id).map(|c| c.enabled).unwrap_or(false);
+    let mut embed = embeds::success_embed(
+        "Decancer Logs Channel Updated",
+        &format!("Set Decancer logs to <#{cid}>."),
+    );
+    if !enabled {
+        embed = embed.footer(CreateEmbedFooter::new(
+            "Reminder: You need to enable the decancer feature!",
+        ));
+    }
+    send_embed(ctx, embed).await
+}
+
+/// Manually clean a member's nickname.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_NICKNAMES",
+    rename = "user"
+)]
+async fn decancer_user(
+    ctx: Context<'_>,
+    #[description = "Member to decancer"] member: Member,
+) -> Result<(), Error> {
+    let sctx = ctx.serenity_context();
+    let guild_id = ctx.guild_id().unwrap();
+
+    let original = member.display_name().to_string();
+    let cleaned = decancer_name(&original);
+
+    if cleaned != original && !cleaned.trim().is_empty() {
+        let _ = guild_id
+            .edit_member(
+                &sctx.http,
+                member.user.id,
+                EditMember::new().nickname(cleaned.clone()),
             )
             .await;
     }
 
-    /// Upsert one threshold column and mirror it into the cache. `col` must be a
-    /// validated `CATEGORIES` key (column names cannot be bound parameters).
-    async fn set_threshold(&self, guild_id: u64, col: &str, value: f64) {
-        // The column name can't be a bound parameter, so map the validated
-        // `col` to its typed entity column and upsert just that threshold.
-        use sentinel_config::Column as C;
-        let gid = guild_id as i64;
-        let upsert = match col {
-            "toxicity" => Some((
-                sentinel_config::ActiveModel {
-                    guild_id: Set(gid),
-                    toxicity: Set(value),
-                    ..Default::default()
-                },
-                C::Toxicity,
-            )),
-            "severe_toxicity" => Some((
-                sentinel_config::ActiveModel {
-                    guild_id: Set(gid),
-                    severe_toxicity: Set(value),
-                    ..Default::default()
-                },
-                C::SevereToxicity,
-            )),
-            "obscene" => Some((
-                sentinel_config::ActiveModel {
-                    guild_id: Set(gid),
-                    obscene: Set(value),
-                    ..Default::default()
-                },
-                C::Obscene,
-            )),
-            "threat" => Some((
-                sentinel_config::ActiveModel {
-                    guild_id: Set(gid),
-                    threat: Set(value),
-                    ..Default::default()
-                },
-                C::Threat,
-            )),
-            "insult" => Some((
-                sentinel_config::ActiveModel {
-                    guild_id: Set(gid),
-                    insult: Set(value),
-                    ..Default::default()
-                },
-                C::Insult,
-            )),
-            "identity_attack" => Some((
-                sentinel_config::ActiveModel {
-                    guild_id: Set(gid),
-                    identity_attack: Set(value),
-                    ..Default::default()
-                },
-                C::IdentityAttack,
-            )),
-            "sexual_explicit" => Some((
-                sentinel_config::ActiveModel {
-                    guild_id: Set(gid),
-                    sexual_explicit: Set(value),
-                    ..Default::default()
-                },
-                C::SexualExplicit,
-            )),
-            _ => None,
-        };
-        if let Some((am, update_col)) = upsert {
-            let _ = sentinel_config::Entity::insert(am)
-                .on_conflict(
-                    OnConflict::column(C::GuildId)
-                        .update_column(update_col)
-                        .to_owned(),
-                )
-                .exec(self.state.servers_orm())
-                .await;
-        }
+    let icon = member
+        .user
+        .avatar_url()
+        .unwrap_or_else(|| member.user.default_avatar_url());
+    let embed = decancer_embed("Decancer Action", &original, &cleaned, member.user.id.get(), icon);
 
-        let mut e = self
-            .state
-            .sentinel_cache
-            .entry(guild_id)
-            .or_insert_with(default_config);
-        match col {
-            "toxicity" => e.toxicity = value,
-            "severe_toxicity" => e.severe_toxicity = value,
-            "obscene" => e.obscene = value,
-            "threat" => e.threat = value,
-            "insult" => e.insult = value,
-            "identity_attack" => e.identity_attack = value,
-            "sexual_explicit" => e.sexual_explicit = value,
-            _ => {}
-        }
-    }
-
-    async fn set_log_channel(&self, guild_id: u64, channel_id: i64) {
-        let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
-            guild_id: Set(guild_id as i64),
-            log_channel_id: Set(Some(channel_id)),
-            ..Default::default()
-        })
-        .on_conflict(
-            OnConflict::column(sentinel_config::Column::GuildId)
-                .update_column(sentinel_config::Column::LogChannelId)
-                .to_owned(),
-        )
-        .exec(self.state.servers_orm())
-        .await;
-        let mut e = self
-            .state
-            .sentinel_cache
-            .entry(guild_id)
-            .or_insert_with(default_config);
-        e.log_channel_id = Some(channel_id);
-    }
-
-    // ---- Decancer management commands -------------------------------------
-
-    async fn handle_decancer_cmd(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        guild_id: u64,
-        subcmd: &str,
-        arg: &str,
-    ) {
-        // `decancer user` force-rewrites a member's nickname (Manage Nicknames);
-        // the enable/disable/logs toggles are guild config (Manage Server).
-        let required = match subcmd {
-            "user" => Some((Permissions::MANAGE_NICKNAMES, "Manage Nicknames")),
-            "enable" | "disable" | "logs" => Some((Permissions::MANAGE_GUILD, "Manage Server")),
-            _ => None,
-        };
-        if let Some((perm, label)) = required
-            && !perms::require_perm(ctx, msg, GuildId::new(guild_id), perm, label).await
-        {
-            return;
-        }
-        match subcmd {
-            "enable" => {
-                self.set_decancer_enabled(guild_id, true).await;
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::success_embed(
-                            "Enabled Decancer",
-                            "New members' nicknames will be automatically cleaned. Consider setting `decancer logs <#channel>`.",
-                        )),
-                    )
-                    .await;
-            }
-            "disable" => {
-                self.set_decancer_enabled(guild_id, false).await;
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(
-                            CreateEmbed::new()
-                                .title("Disabled Decancer")
-                                .description("Automatic nickname cleaning is off. Consider re-enabling this feature!")
-                                .color(colors::RED)
-                                .timestamp(Timestamp::now()),
-                        ),
-                    )
-                    .await;
-            }
-            "logs" => {
-                let cid = parse::parse_channel_id(arg).unwrap_or_else(|| msg.channel_id.get());
-                self.ensure_decancer_row(guild_id).await;
-                let _ = sentinels_decancer::Entity::update_many()
-                    .col_expr(
-                        sentinels_decancer::Column::LogChannelId,
-                        Expr::value(cid as i64),
-                    )
-                    .filter(sentinels_decancer::Column::GuildId.eq(guild_id as i64))
-                    .exec(self.state.servers_orm())
-                    .await;
-                {
-                    let mut e = self
-                        .decancer_cache
-                        .entry(guild_id)
-                        .or_insert(DecancerConfig {
-                            enabled: false,
-                            log_channel_id: None,
-                        });
-                    e.log_channel_id = Some(cid as i64);
-                }
-                let enabled = self
-                    .decancer_cache
-                    .get(&guild_id)
-                    .map(|c| c.enabled)
-                    .unwrap_or(false);
-                let mut embed = embeds::success_embed(
-                    "Decancer Logs Channel Updated",
-                    &format!("Set Decancer logs to <#{cid}>."),
-                );
-                if !enabled {
-                    embed = embed.footer(CreateEmbedFooter::new(
-                        "Reminder: You need to enable the decancer feature!",
-                    ));
-                }
-                let _ = msg
-                    .channel_id
-                    .send_message(&ctx.http, CreateMessage::new().embed(embed))
-                    .await;
-            }
-            "user" => {
-                let uid = match parse::parse_user_id(arg) {
-                    Some(u) => u,
-                    None => {
-                        let _ = msg
-                            .channel_id
-                            .say(&ctx.http, "Usage: decancer user <@member>")
-                            .await;
-                        return;
-                    }
-                };
-                let gid = GuildId::new(guild_id);
-                let member = match gid.member(&ctx.http, UserId::new(uid)).await {
-                    Ok(m) => m,
-                    Err(_) => {
-                        let _ = msg.channel_id.say(&ctx.http, "Member not found.").await;
-                        return;
-                    }
-                };
-
-                let original = member.display_name().to_string();
-                let cleaned = decancer_name(&original);
-                if cleaned != original && !cleaned.trim().is_empty() {
-                    let _ = gid
-                        .edit_member(
-                            &ctx.http,
-                            UserId::new(uid),
-                            EditMember::new().nickname(cleaned.clone()),
-                        )
-                        .await;
-                }
-
-                let icon = member
-                    .user
-                    .avatar_url()
-                    .unwrap_or_else(|| member.user.default_avatar_url());
-                let embed = decancer_embed("Decancer Action", &original, &cleaned, uid, icon);
-                let _ = msg
-                    .channel_id
-                    .send_message(&ctx.http, CreateMessage::new().embed(embed.clone()))
-                    .await;
-
-                if let Some(log_id) = self
-                    .decancer_cache
-                    .get(&guild_id)
-                    .and_then(|c| c.log_channel_id)
-                {
-                    let _ = ChannelId::new(log_id as u64)
-                        .send_message(&ctx.http, CreateMessage::new().embed(embed))
-                        .await;
-                }
-            }
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        "Usage: `decancer enable` | `disable` | `logs <#channel>` | `user <@member>`",
-                    )
-                    .await;
-            }
-        }
-    }
-
-    async fn ensure_decancer_row(&self, guild_id: u64) {
-        let _ = sentinels_decancer::Entity::insert(sentinels_decancer::ActiveModel {
-            guild_id: Set(guild_id as i64),
-            enabled: Set(false),
-            log_channel_id: Set(None),
-        })
-        .on_conflict(
-            OnConflict::column(sentinels_decancer::Column::GuildId)
-                .do_nothing()
-                .to_owned(),
-        )
-        .exec(self.state.servers_orm())
-        .await;
-    }
-
-    async fn set_decancer_enabled(&self, guild_id: u64, enabled: bool) {
-        self.ensure_decancer_row(guild_id).await;
-        let _ = sentinels_decancer::Entity::update_many()
-            .col_expr(sentinels_decancer::Column::Enabled, Expr::value(enabled))
-            .filter(sentinels_decancer::Column::GuildId.eq(guild_id as i64))
-            .exec(self.state.servers_orm())
+    if let Some(log_id) = DECANCER_CACHE
+        .get(&guild_id.get())
+        .and_then(|c| c.log_channel_id)
+    {
+        let _ = ChannelId::new(log_id as u64)
+            .send_message(&sctx.http, CreateMessage::new().embed(embed.clone()))
             .await;
-        let mut e = self
-            .decancer_cache
-            .entry(guild_id)
-            .or_insert(DecancerConfig {
-                enabled: false,
-                log_channel_id: None,
-            });
-        e.enabled = enabled;
+    }
+
+    send_embed(ctx, embed).await
+}
+
+// ---- private async helpers -------------------------------------------------
+
+/// Upsert one threshold column and mirror it into the sentinel cache.
+/// `col` must be a validated `CATEGORIES` key.
+async fn set_threshold(state: &AppState, guild_id: u64, col: &str, value: f64) {
+    use sentinel_config::Column as C;
+    let gid = guild_id as i64;
+    let upsert = match col {
+        "toxicity" => Some((
+            sentinel_config::ActiveModel {
+                guild_id: Set(gid),
+                toxicity: Set(value),
+                ..Default::default()
+            },
+            C::Toxicity,
+        )),
+        "severe_toxicity" => Some((
+            sentinel_config::ActiveModel {
+                guild_id: Set(gid),
+                severe_toxicity: Set(value),
+                ..Default::default()
+            },
+            C::SevereToxicity,
+        )),
+        "obscene" => Some((
+            sentinel_config::ActiveModel {
+                guild_id: Set(gid),
+                obscene: Set(value),
+                ..Default::default()
+            },
+            C::Obscene,
+        )),
+        "threat" => Some((
+            sentinel_config::ActiveModel {
+                guild_id: Set(gid),
+                threat: Set(value),
+                ..Default::default()
+            },
+            C::Threat,
+        )),
+        "insult" => Some((
+            sentinel_config::ActiveModel {
+                guild_id: Set(gid),
+                insult: Set(value),
+                ..Default::default()
+            },
+            C::Insult,
+        )),
+        "identity_attack" => Some((
+            sentinel_config::ActiveModel {
+                guild_id: Set(gid),
+                identity_attack: Set(value),
+                ..Default::default()
+            },
+            C::IdentityAttack,
+        )),
+        "sexual_explicit" => Some((
+            sentinel_config::ActiveModel {
+                guild_id: Set(gid),
+                sexual_explicit: Set(value),
+                ..Default::default()
+            },
+            C::SexualExplicit,
+        )),
+        _ => None,
+    };
+    if let Some((am, update_col)) = upsert {
+        let _ = sentinel_config::Entity::insert(am)
+            .on_conflict(
+                OnConflict::column(C::GuildId)
+                    .update_column(update_col)
+                    .to_owned(),
+            )
+            .exec(state.servers_orm())
+            .await;
+    }
+
+    let mut e = state
+        .sentinel_cache
+        .entry(guild_id)
+        .or_insert_with(default_config);
+    match col {
+        "toxicity" => e.toxicity = value,
+        "severe_toxicity" => e.severe_toxicity = value,
+        "obscene" => e.obscene = value,
+        "threat" => e.threat = value,
+        "insult" => e.insult = value,
+        "identity_attack" => e.identity_attack = value,
+        "sexual_explicit" => e.sexual_explicit = value,
+        _ => {}
     }
 }
 
-// ---- Free helpers ---------------------------------------------------------
+async fn set_log_channel(state: &AppState, guild_id: u64, channel_id: i64) {
+    let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
+        guild_id: Set(guild_id as i64),
+        log_channel_id: Set(Some(channel_id)),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::column(sentinel_config::Column::GuildId)
+            .update_column(sentinel_config::Column::LogChannelId)
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+    let mut e = state
+        .sentinel_cache
+        .entry(guild_id)
+        .or_insert_with(default_config);
+    e.log_channel_id = Some(channel_id);
+}
+
+async fn ensure_decancer_row(state: &AppState, guild_id: u64) {
+    let _ = sentinels_decancer::Entity::insert(sentinels_decancer::ActiveModel {
+        guild_id: Set(guild_id as i64),
+        enabled: Set(false),
+        log_channel_id: Set(None),
+    })
+    .on_conflict(
+        OnConflict::column(sentinels_decancer::Column::GuildId)
+            .do_nothing()
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+}
+
+async fn set_decancer_enabled(state: &AppState, guild_id: u64, enabled: bool) {
+    ensure_decancer_row(state, guild_id).await;
+    let _ = sentinels_decancer::Entity::update_many()
+        .col_expr(sentinels_decancer::Column::Enabled, Expr::value(enabled))
+        .filter(sentinels_decancer::Column::GuildId.eq(guild_id as i64))
+        .exec(state.servers_orm())
+        .await;
+    let mut e = DECANCER_CACHE.entry(guild_id).or_insert(DecancerConfig {
+        enabled: false,
+        log_channel_id: None,
+    });
+    e.enabled = enabled;
+}
+
+// ---- free helpers ----------------------------------------------------------
 
 fn default_config() -> SentinelConfig {
     SentinelConfig {
@@ -1038,7 +1040,7 @@ fn decancer_name(name: &str) -> String {
     }
 }
 
-/// Accept either a 0.0-1.0 float or a 0-100 number.
+/// Accept either a 0.0–1.0 float or a 0–100 number.
 fn parse_threshold(s: &str) -> Option<f64> {
     let v: f64 = s.trim().parse().ok()?;
     if !v.is_finite() {

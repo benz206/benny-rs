@@ -1,20 +1,24 @@
 use super::Cog;
-use crate::state::{AppState, CommandInvocation};
+use crate::framework::{Context, Data, Error, send_error};
+use crate::state::AppState;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::Deserialize;
 use serenity::all::{
-    Colour, ComponentInteraction, ComponentInteractionDataKind, Context, CreateActionRow,
-    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, CreateSelectMenu, CreateSelectMenuKind,
-    CreateSelectMenuOption, Message, Timestamp,
+    Colour, ComponentInteraction, ComponentInteractionDataKind, CreateActionRow, CreateEmbed,
+    CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse,
+    CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind,
+    CreateSelectMenuOption, Timestamp,
 };
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 const API_URL: &str = "https://api.dictionaryapi.dev/api/v2/entries/en/";
 const MAROON: Colour = Colour::new(0x85144B);
 /// Component custom_id namespace for this cog.
 const SELECT_ID: &str = "dict:select";
+
+/// Session map: message id → author id, used for owner check on the dropdown.
+static SESSIONS: LazyLock<DashMap<u64, u64>> = LazyLock::new(DashMap::new);
 
 fn na() -> String {
     "N/A".to_string()
@@ -91,255 +95,19 @@ impl Word {
     }
 }
 
-/// A fetched word cached for the lifetime of its dropdown message, keyed by the
-/// bot's reply message id. `author_id` restricts the dropdown to the invoker.
-struct CachedWord {
-    word: Word,
-    author_id: u64,
-}
-
 pub struct DictionaryCog {
     state: Arc<AppState>,
-    /// message id -> the word backing that message's dropdown.
-    cache: DashMap<u64, CachedWord>,
 }
 
 impl DictionaryCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self {
-            state,
-            cache: DashMap::new(),
-        })
-    }
-
-    async fn fetch_word(&self, word: &str) -> Result<(u16, serde_json::Value), reqwest::Error> {
-        // Build the URL through `Url` so the user-supplied word is percent-encoded
-        // into the path segment rather than interpolated raw (which would let a
-        // word with `/`, `?`, `#`, etc. alter the request target).
-        let mut url = reqwest::Url::parse(API_URL).expect("API_URL is a valid base URL");
-        url.path_segments_mut()
-            .expect("API_URL is a base URL")
-            .pop_if_empty()
-            .push(word);
-        let resp = self.state.http.get(url).send().await?;
-        let status = resp.status().as_u16();
-        let json = resp.json::<serde_json::Value>().await?;
-        Ok((status, json))
-    }
-
-    /// The dropdown of meanings (`DictDropdown`): up to 25 options, label is the
-    /// part of speech, description is the first definition (truncated at 47 chars).
-    fn build_select_menu(word: &Word) -> CreateActionRow {
-        let options: Vec<CreateSelectMenuOption> = word
-            .meanings
-            .iter()
-            .take(25)
-            .enumerate()
-            .map(|(counter, meaning)| {
-                let label = if meaning.part_of_speech.is_empty() {
-                    "N/A".to_string()
-                } else {
-                    meaning.part_of_speech.clone()
-                };
-                let definition = meaning
-                    .definitions
-                    .first()
-                    .map(|d| d.definition.as_str())
-                    .unwrap_or("No definition");
-                let description = if definition.chars().count() > 50 {
-                    format!("{}...", definition.chars().take(47).collect::<String>())
-                } else {
-                    definition.to_string()
-                };
-                CreateSelectMenuOption::new(label, counter.to_string()).description(description)
-            })
-            .collect();
-
-        CreateActionRow::SelectMenu(
-            CreateSelectMenu::new(SELECT_ID, CreateSelectMenuKind::String { options })
-                .placeholder("Choose a Meaning to View")
-                .min_values(1)
-                .max_values(1),
-        )
-    }
-
-    fn author(word: &Word) -> CreateEmbedAuthor {
-        let mut author = CreateEmbedAuthor::new(format!("License: {}", word.license.name));
-        if word.license.url.starts_with("http") {
-            author = author.url(word.license.url.clone());
-        }
-        author
-    }
-
-    /// The landing embed shown before any meaning is selected: title, the "select below" hint,
-    /// phonetic text, audio url, license author and a `-/N` footer.
-    fn initial_embed(word: &Word) -> CreateEmbed {
-        let mut description =
-            String::from("Select one of the below to view different meanings of the word.");
-        if let Some(text) = word.phonetic_text() {
-            description.push_str(&format!("\n\n{text}"));
-        }
-
-        let mut embed = CreateEmbed::new()
-            .title(format!("{} Definition", word.word))
-            .description(description)
-            .timestamp(Timestamp::now())
-            .color(MAROON)
-            .author(Self::author(word))
-            .footer(CreateEmbedFooter::new(format!(
-                "Meaning -/{}",
-                word.meanings.len()
-            )));
-        if let Some(audio) = word.audio_url() {
-            embed = embed.url(audio);
-        }
-        embed
-    }
-
-    /// The per-meaning embed shown after a dropdown selection: part-of-speech field,
-    /// definition + example blockquote, license author and a `M/N` footer.
-    fn meaning_embed(word: &Word, index: usize) -> CreateEmbed {
-        let meaning = &word.meanings[index];
-        let definition = meaning
-            .definitions
-            .first()
-            .map(|d| d.definition.clone())
-            .unwrap_or_default();
-        let example = meaning
-            .definitions
-            .first()
-            .and_then(|d| d.example.as_deref())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("No Example");
-
-        let mut embed = CreateEmbed::new()
-            .title(format!("{} Definition", word.word))
-            .timestamp(Timestamp::now())
-            .color(MAROON)
-            .field("Part of Speech", &meaning.part_of_speech, false)
-            .field("Definition", format!("{definition}\n>>> {example}"), false)
-            .author(Self::author(word))
-            .footer(CreateEmbedFooter::new(format!(
-                "Meaning {}/{}",
-                index + 1,
-                word.meanings.len()
-            )));
-        if let Some(audio) = word.audio_url() {
-            embed = embed.url(audio);
-        }
-        embed
+        Arc::new(Self { state })
     }
 }
 
 #[async_trait]
 impl Cog for DictionaryCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        if inv.command != "define" && inv.command != "dict" && inv.command != "def" {
-            return false;
-        }
-        let word = inv.args;
-
-        if word.is_empty() {
-            let _ = msg.channel_id.say(&ctx.http, "Usage: define <word>").await;
-            return true;
-        }
-
-        if !word.chars().all(|c| c.is_alphabetic()) {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    "The requested definition must be alphabetic, this means no spaces or special characters",
-                )
-                .await;
-            return true;
-        }
-
-        let (status, json) = match self.fetch_word(word).await {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::error!(error = ?e, "dictionary request failed");
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Dictionary service unavailable.")
-                    .await;
-                return true;
-            }
-        };
-
-        if status != 200 {
-            // The API returns a 404 JSON object with `title`/`message`.
-            let message = json
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Sorry, we couldn't find definitions for that word.");
-            let title = json
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("No Definitions Found");
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, format!("**{title}**\n{message}"))
-                .await;
-            return true;
-        }
-
-        let entry = match json.as_array().and_then(|a| a.first()) {
-            Some(e) => e.clone(),
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("No definition found for `{word}`."))
-                    .await;
-                return true;
-            }
-        };
-
-        let parsed: Word = match serde_json::from_value(entry) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to parse dictionary response");
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Failed to parse definition.")
-                    .await;
-                return true;
-            }
-        };
-
-        if parsed.meanings.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, format!("No definition found for `{word}`."))
-                .await;
-            return true;
-        }
-
-        let builder = CreateMessage::new()
-            .reference_message(msg)
-            .embed(Self::initial_embed(&parsed))
-            .components(vec![Self::build_select_menu(&parsed)]);
-
-        match msg.channel_id.send_message(&ctx.http, builder).await {
-            Ok(sent) => {
-                crate::utils::cache::bounded_insert(
-                    &self.cache,
-                    sent.id.get(),
-                    CachedWord {
-                        word: parsed,
-                        author_id: msg.author.id.get(),
-                    },
-                    2000,
-                );
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to send dictionary message");
-            }
-        }
-        true
-    }
-
-    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+    async fn on_component(&self, ctx: &serenity::all::Context, interaction: &ComponentInteraction) {
         if !interaction.data.custom_id.starts_with("dict:") {
             return;
         }
@@ -354,13 +122,9 @@ impl Cog for DictionaryCog {
 
         let message_id = interaction.message.id.get();
 
-        // Primary path: the word is still cached. Fallback: re-fetch using the
-        // word from the embed title (survives restarts / cache eviction).
-        let cached = self.cache.get(&message_id);
-
-        if let Some(entry) = cached.as_ref() {
-            // Only the original invoker may use the dropdown.
-            if interaction.user.id.get() != entry.author_id {
+        // Owner check: only the original invoker may use the dropdown.
+        if let Some(author_id) = SESSIONS.get(&message_id) {
+            if interaction.user.id.get() != *author_id {
                 let _ = interaction
                     .create_response(
                         &ctx.http,
@@ -375,34 +139,30 @@ impl Cog for DictionaryCog {
             }
         }
 
-        let word: Word = if let Some(entry) = cached.as_ref() {
-            entry.word.clone()
-        } else {
-            // Cache miss: recover the word from the embed title ("<word> Definition").
-            let title = interaction
-                .message
-                .embeds
-                .first()
-                .and_then(|e| e.title.as_deref())
-                .unwrap_or("");
-            let lookup = title.strip_suffix(" Definition").unwrap_or(title).trim();
-            if lookup.is_empty() {
-                return;
-            }
-            match self.fetch_word(lookup).await {
-                Ok((200, json)) => match json
-                    .as_array()
-                    .and_then(|a| a.first())
-                    .cloned()
-                    .map(serde_json::from_value::<Word>)
-                {
-                    Some(Ok(w)) => w,
-                    _ => return,
-                },
+        // Recover the word from the embed title ("<word> Definition").
+        let title = interaction
+            .message
+            .embeds
+            .first()
+            .and_then(|e| e.title.as_deref())
+            .unwrap_or("");
+        let lookup = title.strip_suffix(" Definition").unwrap_or(title).trim();
+        if lookup.is_empty() {
+            return;
+        }
+
+        let word = match fetch_word(&self.state.http, lookup).await {
+            Ok((200, json)) => match json
+                .as_array()
+                .and_then(|a| a.first())
+                .cloned()
+                .map(serde_json::from_value::<Word>)
+            {
+                Some(Ok(w)) => w,
                 _ => return,
-            }
+            },
+            _ => return,
         };
-        drop(cached);
 
         if index >= word.meanings.len() {
             return;
@@ -410,11 +170,217 @@ impl Cog for DictionaryCog {
 
         let response = CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
-                .embed(Self::meaning_embed(&word, index))
-                .components(vec![Self::build_select_menu(&word)]),
+                .embed(meaning_embed(&word, index))
+                .components(vec![build_select_menu(&word)]),
         );
         if let Err(e) = interaction.create_response(&ctx.http, response).await {
             tracing::error!(error = ?e, "failed to update dictionary message");
         }
     }
+}
+
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![define()]
+}
+
+// ---- commands --------------------------------------------------------------
+
+/// Look up a word in the dictionary and show a part-of-speech dropdown.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Dictionary",
+    aliases("dict", "def")
+)]
+async fn define(
+    ctx: Context<'_>,
+    #[description = "Word"]
+    #[rest]
+    word: String,
+) -> Result<(), Error> {
+    let word = word.trim().to_string();
+
+    if word.is_empty() {
+        return send_error(ctx, "Usage: define <word>").await;
+    }
+
+    if !word.chars().all(|c| c.is_alphabetic()) {
+        return send_error(
+            ctx,
+            "The requested definition must be alphabetic, this means no spaces or special characters",
+        )
+        .await;
+    }
+
+    let state = &ctx.data().state;
+
+    let (status, json) = match fetch_word(&state.http, &word).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::error!(error = ?e, "dictionary request failed");
+            return send_error(ctx, "Dictionary service unavailable.").await;
+        }
+    };
+
+    if status != 200 {
+        let message = json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Sorry, we couldn't find definitions for that word.");
+        let title = json
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No Definitions Found");
+        ctx.say(format!("**{title}**\n{message}")).await?;
+        return Ok(());
+    }
+
+    let entry = match json.as_array().and_then(|a| a.first()) {
+        Some(e) => e.clone(),
+        None => {
+            return send_error(ctx, &format!("No definition found for `{word}`.")).await;
+        }
+    };
+
+    let parsed: Word = match serde_json::from_value(entry) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!(error = ?e, "failed to parse dictionary response");
+            return send_error(ctx, "Failed to parse definition.").await;
+        }
+    };
+
+    if parsed.meanings.is_empty() {
+        return send_error(ctx, &format!("No definition found for `{word}`.")).await;
+    }
+
+    let handle = ctx
+        .send(
+            poise::CreateReply::default()
+                .embed(initial_embed(&parsed))
+                .components(vec![build_select_menu(&parsed)]),
+        )
+        .await?;
+    let sent = handle.message().await?;
+    crate::utils::cache::bounded_insert(&SESSIONS, sent.id.get(), ctx.author().id.get(), 2000);
+
+    Ok(())
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+async fn fetch_word(
+    client: &reqwest::Client,
+    word: &str,
+) -> Result<(u16, serde_json::Value), reqwest::Error> {
+    let mut url = reqwest::Url::parse(API_URL).expect("API_URL is a valid base URL");
+    url.path_segments_mut()
+        .expect("API_URL is a base URL")
+        .pop_if_empty()
+        .push(word);
+    let resp = client.get(url).send().await?;
+    let status = resp.status().as_u16();
+    let json = resp.json::<serde_json::Value>().await?;
+    Ok((status, json))
+}
+
+/// The dropdown of meanings: up to 25 options, label is the part of speech,
+/// description is the first definition (truncated at 47 chars).
+fn build_select_menu(word: &Word) -> CreateActionRow {
+    let options: Vec<CreateSelectMenuOption> = word
+        .meanings
+        .iter()
+        .take(25)
+        .enumerate()
+        .map(|(counter, meaning)| {
+            let label = if meaning.part_of_speech.is_empty() {
+                "N/A".to_string()
+            } else {
+                meaning.part_of_speech.clone()
+            };
+            let definition = meaning
+                .definitions
+                .first()
+                .map(|d| d.definition.as_str())
+                .unwrap_or("No definition");
+            let description = if definition.chars().count() > 50 {
+                format!("{}...", definition.chars().take(47).collect::<String>())
+            } else {
+                definition.to_string()
+            };
+            CreateSelectMenuOption::new(label, counter.to_string()).description(description)
+        })
+        .collect();
+
+    CreateActionRow::SelectMenu(
+        CreateSelectMenu::new(SELECT_ID, CreateSelectMenuKind::String { options })
+            .placeholder("Choose a Meaning to View")
+            .min_values(1)
+            .max_values(1),
+    )
+}
+
+fn word_license_author(word: &Word) -> CreateEmbedAuthor {
+    let mut author = CreateEmbedAuthor::new(format!("License: {}", word.license.name));
+    if word.license.url.starts_with("http") {
+        author = author.url(word.license.url.clone());
+    }
+    author
+}
+
+/// The landing embed shown before any meaning is selected.
+fn initial_embed(word: &Word) -> CreateEmbed {
+    let mut description =
+        String::from("Select one of the below to view different meanings of the word.");
+    if let Some(text) = word.phonetic_text() {
+        description.push_str(&format!("\n\n{text}"));
+    }
+
+    let mut embed = CreateEmbed::new()
+        .title(format!("{} Definition", word.word))
+        .description(description)
+        .timestamp(Timestamp::now())
+        .color(MAROON)
+        .author(word_license_author(word))
+        .footer(CreateEmbedFooter::new(format!(
+            "Meaning -/{}",
+            word.meanings.len()
+        )));
+    if let Some(audio) = word.audio_url() {
+        embed = embed.url(audio);
+    }
+    embed
+}
+
+/// The per-meaning embed shown after a dropdown selection.
+fn meaning_embed(word: &Word, index: usize) -> CreateEmbed {
+    let meaning = &word.meanings[index];
+    let definition = meaning
+        .definitions
+        .first()
+        .map(|d| d.definition.clone())
+        .unwrap_or_default();
+    let example = meaning
+        .definitions
+        .first()
+        .and_then(|d| d.example.as_deref())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("No Example");
+
+    let mut embed = CreateEmbed::new()
+        .title(format!("{} Definition", word.word))
+        .timestamp(Timestamp::now())
+        .color(MAROON)
+        .field("Part of Speech", &meaning.part_of_speech, false)
+        .field("Definition", format!("{definition}\n>>> {example}"), false)
+        .author(word_license_author(word))
+        .footer(CreateEmbedFooter::new(format!(
+            "Meaning {}/{}",
+            index + 1,
+            word.meanings.len()
+        )));
+    if let Some(audio) = word.audio_url() {
+        embed = embed.url(audio);
+    }
+    embed
 }

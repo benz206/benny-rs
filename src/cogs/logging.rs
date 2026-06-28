@@ -1,13 +1,12 @@
 use super::Cog;
 use crate::entities::logging;
-use crate::state::{AppState, CommandInvocation, LoggingConfig};
-use crate::utils::perms;
+use crate::framework::{Context, Data, Error, send_error};
+use crate::state::{AppState, LoggingConfig};
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    ChannelId, Context, GuildChannel, GuildId, Member, Message, MessageId, Permissions, Role,
-    RoleId, User,
+    ChannelId, GuildChannel, GuildId, Member, Message, MessageId, Role, RoleId, User,
 };
 use serenity::model::event::MessageUpdateEvent;
 use std::sync::Arc;
@@ -27,54 +26,6 @@ impl LoggingCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
         Arc::new(Self { state })
     }
-
-    /// POST a raw embed payload to the guild's configured webhook. No-op when
-    /// the guild has no webhook configured or logging is disabled.
-    async fn send_log(&self, guild_id: u64, payload: serde_json::Value) {
-        let config = match self.state.logging_cache.get(&guild_id) {
-            Some(c) if c.enabled && !c.webhook_url.is_empty() => c.clone(),
-            _ => return,
-        };
-
-        if let Err(e) = self
-            .state
-            .http
-            .post(&config.webhook_url)
-            .json(&payload)
-            .send()
-            .await
-        {
-            error!(error = ?e, guild_id, "failed to send log webhook");
-        }
-    }
-
-    /// Build a single color-coded, timestamped embed from `fields` and dispatch
-    /// it to the guild webhook. Every logged event funnels through here so they
-    /// all carry a timestamp.
-    async fn log_event(
-        &self,
-        guild_id: u64,
-        title: &str,
-        color: u32,
-        fields: Vec<(&str, String, bool)>,
-    ) {
-        let json_fields: Vec<serde_json::Value> = fields
-            .into_iter()
-            .map(|(name, value, inline)| {
-                serde_json::json!({ "name": name, "value": value, "inline": inline })
-            })
-            .collect();
-
-        let payload = serde_json::json!({
-            "embeds": [{
-                "title": title,
-                "color": color,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "fields": json_fields,
-            }]
-        });
-        self.send_log(guild_id, payload).await;
-    }
 }
 
 /// Discord rejects embed field values that are empty or over 1024 chars. Normalize
@@ -93,9 +44,56 @@ fn user_display(u: &User) -> String {
     format!("{} (<@{}>)", u.name, u.id.get())
 }
 
+/// POST a raw embed payload to the guild's configured webhook. No-op when
+/// the guild has no webhook configured or logging is disabled.
+async fn send_log(state: &AppState, guild_id: u64, payload: serde_json::Value) {
+    let config = match state.logging_cache.get(&guild_id) {
+        Some(c) if c.enabled && !c.webhook_url.is_empty() => c.clone(),
+        _ => return,
+    };
+
+    if let Err(e) = state
+        .http
+        .post(&config.webhook_url)
+        .json(&payload)
+        .send()
+        .await
+    {
+        error!(error = ?e, guild_id, "failed to send log webhook");
+    }
+}
+
+/// Build a single color-coded, timestamped embed from `fields` and dispatch
+/// it to the guild webhook. Every logged event funnels through here so they
+/// all carry a timestamp.
+async fn log_event(
+    state: &AppState,
+    guild_id: u64,
+    title: &str,
+    color: u32,
+    fields: Vec<(&str, String, bool)>,
+) {
+    let json_fields: Vec<serde_json::Value> = fields
+        .into_iter()
+        .map(|(name, value, inline)| {
+            serde_json::json!({ "name": name, "value": value, "inline": inline })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "embeds": [{
+            "title": title,
+            "color": color,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "fields": json_fields,
+        }]
+    });
+    send_log(state, guild_id, payload).await;
+}
+
 #[async_trait]
 impl Cog for LoggingCog {
-    async fn on_ready(&self, _ctx: &Context) {
+    async fn on_ready(&self, _ctx: &serenity::all::Context) {
         let rows = logging::Entity::find()
             .all(self.state.servers_orm())
             .await
@@ -113,105 +111,9 @@ impl Cog for LoggingCog {
         tracing::info!("Logging configs loaded");
     }
 
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        let guild_id = match msg.guild_id {
-            Some(g) => g.get(),
-            None => return false,
-        };
-        if inv.command != "logging" {
-            return false;
-        }
-
-        let subcmd = inv.args;
-        let mut parts = subcmd.splitn(2, ' ');
-        let action = parts.next().unwrap_or("");
-        let arg = parts.next().unwrap_or("").trim();
-
-        // Logging pipes guild-wide events — including message content — to a
-        // stored webhook, so every subcommand requires Manage Server.
-        if !perms::require_perm(
-            ctx,
-            msg,
-            GuildId::new(guild_id),
-            Permissions::MANAGE_GUILD,
-            "Manage Server",
-        )
-        .await
-        {
-            return true;
-        }
-
-        match action {
-            "setup" => {
-                let webhook_url = arg;
-                if webhook_url.is_empty() || !is_discord_webhook(webhook_url) {
-                    let _ = msg
-                        .channel_id
-                        .say(
-                            &ctx.http,
-                            "Usage: logging setup <webhook_url> (must be a Discord webhook URL)",
-                        )
-                        .await;
-                    return true;
-                }
-                let _ = logging::Entity::insert(logging::ActiveModel {
-                    guild_id: Set(guild_id as i64),
-                    webhook_url: Set(webhook_url.to_string()),
-                    enabled: Set(true),
-                })
-                .on_conflict(
-                    OnConflict::column(logging::Column::GuildId)
-                        .update_columns([logging::Column::WebhookUrl, logging::Column::Enabled])
-                        .to_owned(),
-                )
-                .exec(self.state.servers_orm())
-                .await;
-                self.state.logging_cache.insert(
-                    guild_id,
-                    LoggingConfig {
-                        webhook_url: webhook_url.to_string(),
-                        enabled: true,
-                    },
-                );
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Logging webhook configured and enabled.")
-                    .await;
-            }
-            "disable" => {
-                let _ = logging::Entity::update_many()
-                    .col_expr(logging::Column::Enabled, Expr::value(false))
-                    .filter(logging::Column::GuildId.eq(guild_id as i64))
-                    .exec(self.state.servers_orm())
-                    .await;
-                if let Some(mut e) = self.state.logging_cache.get_mut(&guild_id) {
-                    e.enabled = false;
-                }
-                let _ = msg.channel_id.say(&ctx.http, "Logging disabled.").await;
-            }
-            "test" => {
-                let payload = serde_json::json!({
-                    "content": "Logging test — this webhook is working!"
-                });
-                self.send_log(guild_id, payload).await;
-                let _ = msg.channel_id.say(&ctx.http, "Test log sent.").await;
-            }
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        "Usage: `logging setup <webhook_url>` | `logging disable` | `logging test`",
-                    )
-                    .await;
-            }
-        }
-        true
-    }
-
     async fn on_message_update(
         &self,
-        _ctx: &Context,
+        _ctx: &serenity::all::Context,
         old: Option<Message>,
         new: Option<Message>,
         _event: &MessageUpdateEvent,
@@ -244,7 +146,8 @@ impl Cog for LoggingCog {
             None => "*(unavailable — not cached)*".to_string(),
         };
 
-        self.log_event(
+        log_event(
+            &self.state,
             guild_id,
             "Message Edited",
             C_YELLOW,
@@ -260,7 +163,7 @@ impl Cog for LoggingCog {
 
     async fn on_message_delete(
         &self,
-        ctx: &Context,
+        ctx: &serenity::all::Context,
         channel_id: ChannelId,
         msg_id: MessageId,
         guild_id: Option<GuildId>,
@@ -297,17 +200,17 @@ impl Cog for LoggingCog {
             }
         }
 
-        self.log_event(guild_id, "Message Deleted", C_RED, fields)
-            .await;
+        log_event(&self.state, guild_id, "Message Deleted", C_RED, fields).await;
     }
 
-    async fn on_member_join(&self, _ctx: &Context, member: &Member) {
+    async fn on_member_join(&self, _ctx: &serenity::all::Context, member: &Member) {
         let guild_id = member.guild_id.get();
         let created_timestamp = member.user.id.created_at().unix_timestamp();
         let now = chrono::Utc::now().timestamp();
         let account_age_days = (now - created_timestamp) / 86400;
 
-        self.log_event(
+        log_event(
+            &self.state,
             guild_id,
             "Member Joined",
             C_GREEN,
@@ -319,8 +222,9 @@ impl Cog for LoggingCog {
         .await;
     }
 
-    async fn on_member_leave(&self, _ctx: &Context, guild_id: GuildId, user: &User) {
-        self.log_event(
+    async fn on_member_leave(&self, _ctx: &serenity::all::Context, guild_id: GuildId, user: &User) {
+        log_event(
+            &self.state,
             guild_id.get(),
             "Member Left",
             C_ORANGE,
@@ -329,8 +233,9 @@ impl Cog for LoggingCog {
         .await;
     }
 
-    async fn on_member_ban(&self, _ctx: &Context, guild_id: GuildId, banned_user: &User) {
-        self.log_event(
+    async fn on_member_ban(&self, _ctx: &serenity::all::Context, guild_id: GuildId, banned_user: &User) {
+        log_event(
+            &self.state,
             guild_id.get(),
             "Member Banned",
             C_RED,
@@ -339,8 +244,14 @@ impl Cog for LoggingCog {
         .await;
     }
 
-    async fn on_member_unban(&self, _ctx: &Context, guild_id: GuildId, unbanned_user: &User) {
-        self.log_event(
+    async fn on_member_unban(
+        &self,
+        _ctx: &serenity::all::Context,
+        guild_id: GuildId,
+        unbanned_user: &User,
+    ) {
+        log_event(
+            &self.state,
             guild_id.get(),
             "Member Unbanned",
             C_GREEN,
@@ -349,8 +260,9 @@ impl Cog for LoggingCog {
         .await;
     }
 
-    async fn on_channel_create(&self, _ctx: &Context, channel: &GuildChannel) {
-        self.log_event(
+    async fn on_channel_create(&self, _ctx: &serenity::all::Context, channel: &GuildChannel) {
+        log_event(
+            &self.state,
             channel.guild_id.get(),
             "Channel Created",
             C_GREEN,
@@ -366,10 +278,11 @@ impl Cog for LoggingCog {
         .await;
     }
 
-    async fn on_channel_delete(&self, _ctx: &Context, channel: &GuildChannel) {
+    async fn on_channel_delete(&self, _ctx: &serenity::all::Context, channel: &GuildChannel) {
         // The channel is gone, so a `<#id>` mention would not resolve — show the
         // raw name and id instead.
-        self.log_event(
+        log_event(
+            &self.state,
             channel.guild_id.get(),
             "Channel Deleted",
             C_RED,
@@ -382,8 +295,9 @@ impl Cog for LoggingCog {
         .await;
     }
 
-    async fn on_role_create(&self, _ctx: &Context, role: &Role) {
-        self.log_event(
+    async fn on_role_create(&self, _ctx: &serenity::all::Context, role: &Role) {
+        log_event(
+            &self.state,
             role.guild_id.get(),
             "Role Created",
             C_GREEN,
@@ -401,7 +315,7 @@ impl Cog for LoggingCog {
 
     async fn on_role_delete(
         &self,
-        _ctx: &Context,
+        _ctx: &serenity::all::Context,
         guild_id: GuildId,
         role_id: RoleId,
         role: Option<Role>,
@@ -412,7 +326,8 @@ impl Cog for LoggingCog {
             .map(|r| r.name.clone())
             .unwrap_or_else(|| "*(uncached role)*".to_string());
 
-        self.log_event(
+        log_event(
+            &self.state,
             guild_id.get(),
             "Role Deleted",
             C_RED,
@@ -423,6 +338,122 @@ impl Cog for LoggingCog {
         )
         .await;
     }
+}
+
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![logging()]
+}
+
+// ---- commands ---------------------------------------------------------------
+
+/// Configure and manage server event logging.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Logging",
+    guild_only,
+    subcommands("logging_setup", "logging_disable", "logging_test"),
+    subcommand_required
+)]
+async fn logging(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Set the Discord webhook URL to receive server event logs.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "setup",
+    guild_only,
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn logging_setup(
+    ctx: Context<'_>,
+    #[description = "Webhook URL"]
+    #[rest]
+    webhook_url: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+
+    if !is_discord_webhook(&webhook_url) {
+        return send_error(
+            ctx,
+            "Webhook URL must be a Discord webhook (https://discord.com/api/webhooks/...).",
+        )
+        .await;
+    }
+
+    let _ = logging::Entity::insert(logging::ActiveModel {
+        guild_id: Set(guild_id as i64),
+        webhook_url: Set(webhook_url.clone()),
+        enabled: Set(true),
+    })
+    .on_conflict(
+        OnConflict::column(logging::Column::GuildId)
+            .update_columns([logging::Column::WebhookUrl, logging::Column::Enabled])
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+
+    state.logging_cache.insert(
+        guild_id,
+        LoggingConfig {
+            webhook_url,
+            enabled: true,
+        },
+    );
+
+    ctx.say("Logging webhook configured and enabled.").await?;
+    Ok(())
+}
+
+/// Disable event logging for this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "disable",
+    guild_only,
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn logging_disable(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+
+    let _ = logging::Entity::update_many()
+        .col_expr(logging::Column::Enabled, Expr::value(false))
+        .filter(logging::Column::GuildId.eq(guild_id as i64))
+        .exec(state.servers_orm())
+        .await;
+
+    if let Some(mut e) = state.logging_cache.get_mut(&guild_id) {
+        e.enabled = false;
+    }
+
+    ctx.say("Logging disabled.").await?;
+    Ok(())
+}
+
+/// Send a test message to the configured logging webhook.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "test",
+    guild_only,
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn logging_test(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+
+    let payload = serde_json::json!({
+        "content": "Logging test — this webhook is working!"
+    });
+    send_log(state, guild_id, payload).await;
+
+    ctx.say("Test log sent.").await?;
+    Ok(())
 }
 
 /// Whether `url` is a Discord webhook endpoint. Restricting the stored log

@@ -1,19 +1,22 @@
 use super::Cog;
 use crate::entities::afk;
-use crate::state::{AfkEntry, AppState, CommandInvocation};
+use crate::framework::{Context, Data, Error, send_embed};
+use crate::state::{AfkEntry, AppState};
 use crate::utils::format::humanize_duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    Colour, Context, CreateEmbed, CreateEmbedFooter, CreateMessage, Message, Timestamp,
+    Colour, CreateEmbed, CreateEmbedFooter, CreateMessage, Message, Timestamp,
 };
 use std::sync::Arc;
 use std::time::Duration;
 
 const AQUA: Colour = Colour::from_rgb(0x7F, 0xDB, 0xFF); // 0x7FDBFF
 const PINK: Colour = Colour::from_rgb(0xF0, 0x12, 0xBE); // 0xF012BE
+
+const DEFAULT_AFK_MESSAGE: &str = "I'm currently AFK.";
 
 pub struct AfkCog {
     state: Arc<AppState>,
@@ -27,7 +30,7 @@ impl AfkCog {
 
 #[async_trait]
 impl Cog for AfkCog {
-    async fn on_ready(&self, _ctx: &Context) {
+    async fn on_ready(&self, _ctx: &serenity::all::Context) {
         let rows = afk::Entity::find()
             .all(self.state.servers_orm())
             .await
@@ -45,80 +48,85 @@ impl Cog for AfkCog {
         tracing::info!("AFK cache loaded ({} entries)", self.state.afk_cache.len());
     }
 
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
+    async fn on_message(&self, ctx: &serenity::all::Context, msg: &Message) {
         let guild_id = match msg.guild_id {
             Some(g) => g.get(),
             None => return,
         };
         let now = Utc::now().timestamp();
         // Run on every non-bot message: clear the author's own AFK and announce
-        // any mentioned AFK users. Setting AFK is the `afk` command (on_command),
-        // which the central handler dispatches after this observer.
+        // any mentioned AFK users.
         self.manage_afk(ctx, msg, guild_id, now).await;
-    }
-
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        if inv.command != "afk" {
-            return false;
-        }
-        let Some(guild_id) = msg.guild_id else {
-            return false;
-        };
-        self.set_afk(ctx, msg, guild_id.get(), inv.args.to_string())
-            .await;
-        true
     }
 }
 
-impl AfkCog {
-    async fn set_afk(&self, ctx: &Context, msg: &Message, guild_id: u64, message: String) {
-        let user_id = msg.author.id.get();
-        let set_at = Utc::now().timestamp();
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![afk()]
+}
 
-        self.state.afk_cache.insert(
-            (guild_id, user_id),
-            AfkEntry {
-                message: message.clone(),
-                set_at,
-            },
+// ---- commands --------------------------------------------------------------
+
+/// Set yourself as AFK with an optional reason.
+#[poise::command(slash_command, prefix_command, guild_only, category = "AFK")]
+async fn afk(
+    ctx: Context<'_>,
+    #[description = "AFK reason"]
+    #[rest]
+    reason: Option<String>,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let state = &ctx.data().state;
+    let author = ctx.author();
+    let user_id = author.id.get();
+    let message = reason.unwrap_or_else(|| DEFAULT_AFK_MESSAGE.to_string());
+    let set_at = Utc::now().timestamp();
+
+    state.afk_cache.insert(
+        (guild_id.get(), user_id),
+        AfkEntry {
+            message: message.clone(),
+            set_at,
+        },
+    );
+    let _ = afk::Entity::insert(afk::ActiveModel {
+        guild_id: Set(guild_id.get() as i64),
+        user_id: Set(user_id as i64),
+        message: Set(message.clone()),
+        set_at: Set(set_at),
+    })
+    .on_conflict(
+        OnConflict::columns([afk::Column::GuildId, afk::Column::UserId])
+            .update_columns([afk::Column::Message, afk::Column::SetAt])
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+
+    let avatar = author
+        .avatar_url()
+        .unwrap_or_else(|| author.default_avatar_url());
+    let embed = CreateEmbed::new()
+        .title("Set AFK")
+        .description(format!(">>> {message}"))
+        .color(AQUA)
+        .timestamp(Timestamp::now())
+        .footer(
+            CreateEmbedFooter::new("To remove this AFK send a message anywhere")
+                .icon_url(avatar),
         );
-        let _ = afk::Entity::insert(afk::ActiveModel {
-            guild_id: Set(guild_id as i64),
-            user_id: Set(user_id as i64),
-            message: Set(message.clone()),
-            set_at: Set(set_at),
-        })
-        .on_conflict(
-            OnConflict::columns([afk::Column::GuildId, afk::Column::UserId])
-                .update_columns([afk::Column::Message, afk::Column::SetAt])
-                .to_owned(),
-        )
-        .exec(self.state.servers_orm())
-        .await;
+    send_embed(ctx, embed).await
+}
 
-        let avatar = msg
-            .author
-            .avatar_url()
-            .unwrap_or_else(|| msg.author.default_avatar_url());
-        let embed = CreateEmbed::new()
-            .title("Set AFK")
-            .description(format!(">>> {message}"))
-            .color(AQUA)
-            .timestamp(Timestamp::now())
-            .footer(
-                CreateEmbedFooter::new("To remove this AFK send a message anywhere")
-                    .icon_url(avatar),
-            );
-        let _ = msg
-            .channel_id
-            .send_message(
-                &ctx.http,
-                CreateMessage::new().embed(embed).reference_message(msg),
-            )
-            .await;
-    }
+// ---- cog helpers -----------------------------------------------------------
 
-    async fn manage_afk(&self, ctx: &Context, msg: &Message, guild_id: u64, now: i64) {
+impl AfkCog {
+    async fn manage_afk(
+        &self,
+        ctx: &serenity::all::Context,
+        msg: &Message,
+        guild_id: u64,
+        now: i64,
+    ) {
         let user_id = msg.author.id.get();
 
         // Author sent a message → clear their AFK if >3s have elapsed since it was set.

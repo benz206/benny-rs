@@ -25,7 +25,24 @@ pub type Context<'a> = poise::Context<'a, Data, Error>;
 /// Add a cog's `commands()` here when it is converted to poise.
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     let mut cmds = Vec::new();
+    cmds.extend(crate::cogs::base::commands());
+    cmds.extend(crate::cogs::info::commands());
     cmds.extend(crate::cogs::moderation::commands());
+    cmds.extend(crate::cogs::prefixes::commands());
+    cmds.extend(crate::cogs::settings::commands());
+    cmds.extend(crate::cogs::welcome::commands());
+    cmds.extend(crate::cogs::logging::commands());
+    cmds.extend(crate::cogs::sentinel::commands());
+    cmds.extend(crate::cogs::roles::commands());
+    cmds.extend(crate::cogs::reminders::commands());
+    cmds.extend(crate::cogs::premium::commands());
+    cmds.extend(crate::cogs::translate::commands());
+    cmds.extend(crate::cogs::dictionary::commands());
+    cmds.extend(crate::cogs::ocr::commands());
+    cmds.extend(crate::cogs::embed::commands());
+    cmds.extend(crate::cogs::afk::commands());
+    cmds.extend(crate::cogs::music::commands());
+    cmds.extend(crate::cogs::dev::commands());
     cmds
 }
 

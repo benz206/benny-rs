@@ -1,21 +1,20 @@
 use super::Cog;
-use crate::state::{AppState, CommandInvocation};
+use crate::framework::{Context, Data, Error, send_error};
+use crate::state::AppState;
 use crate::utils::{colors, format};
 use async_trait::async_trait;
-use dashmap::DashMap;
 use serenity::all::{
-    ButtonStyle, CommandInteraction, ComponentInteraction, Context, CreateActionRow, CreateButton,
-    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
-    Message, MessageId, ResolvedTarget, Timestamp,
+    ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
+    CreateInteractionResponse, CreateInteractionResponseMessage, MessageId, Timestamp,
 };
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
-/// custom_id prefix for this cog's interactive buttons.
+/// Custom_id prefix for the cog's interactive buttons.
 const ORIGINAL_ID: &str = "tr:original";
 const TRANSLATED_ID: &str = "tr:translated";
 
-/// Per-message translation state, kept so the toggle buttons can rebuild the
-/// original / translated embeds long after the gtx call has completed.
+/// Per-message translation state, kept so toggle buttons rebuild
+/// original / translated embeds long after the gtx call completed.
 struct TranslateState {
     /// Detected source language code (e.g. `en`, `zh-cn`).
     src: String,
@@ -27,234 +26,23 @@ struct TranslateState {
     translated: String,
 }
 
-/// Cap on retained translation sessions, to bound memory over long uptimes.
+/// Cap on retained translation sessions to bound memory over long uptimes.
 const MAX_STATES: usize = 1000;
 
-pub struct TranslateCog {
-    state: Arc<AppState>,
-    /// Keyed by the id of the message that carries the buttons.
-    states: DashMap<MessageId, TranslateState>,
-}
+static STATES: LazyLock<dashmap::DashMap<MessageId, TranslateState>> =
+    LazyLock::new(dashmap::DashMap::new);
+
+pub struct TranslateCog;
 
 impl TranslateCog {
-    pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self {
-            state,
-            states: DashMap::new(),
-        })
-    }
-
-    /// Call the unofficial Google Translate (gtx) endpoint. Returns the detected
-    /// source language code and the translated text, or `None` on failure.
-    pub async fn translate_text(&self, text: &str, target: &str) -> Option<(String, String)> {
-        let response = self
-            .state
-            .http
-            .get("https://translate.googleapis.com/translate_a/single")
-            .query(&[
-                ("client", "gtx"),
-                ("sl", "auto"),
-                ("tl", target),
-                ("dt", "t"),
-                ("q", text),
-            ])
-            .send()
-            .await
-            .ok()?;
-
-        // Response format: [[["translated","original",...],...],null,"detected_lang",...]
-        let json: serde_json::Value = response.json().await.ok()?;
-        let translated = json.get(0).and_then(|arr| arr.as_array()).map(|chunks| {
-            chunks
-                .iter()
-                .filter_map(|chunk| chunk.get(0).and_then(|v| v.as_str()))
-                .collect::<Vec<_>>()
-                .join("")
-        })?;
-        let detected = json
-            .get(2)
-            .and_then(|v| v.as_str())
-            .unwrap_or("auto")
-            .to_string();
-
-        Some((detected, translated))
-    }
-
-    /// Build the summary embed shown alongside the toggle buttons (two fields, pink, timestamped).
-    fn build_embed(src: &str, dest: &str, origin: &str, translated: &str) -> CreateEmbed {
-        CreateEmbed::new()
-            .title("Translating Text")
-            .color(colors::PINK)
-            .timestamp(Timestamp::now())
-            .field(
-                format!("Original: {}", language_name(src)),
-                non_empty(format::truncate(origin, 1000)),
-                false,
-            )
-            .field(
-                format!("Translated: {}", language_name(dest)),
-                non_empty(format::truncate(translated, 1000)),
-                false,
-            )
-    }
-
-    /// The "Original" / "Translated" toggle row.
-    fn buttons() -> CreateActionRow {
-        CreateActionRow::Buttons(vec![
-            CreateButton::new(ORIGINAL_ID)
-                .label("Original")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(TRANSLATED_ID)
-                .label("Translated")
-                .style(ButtonStyle::Success),
-        ])
-    }
-
-    /// Translate a message's content and reply to an application-command
-    /// interaction (used by the "Translate" message context menu in slash.rs).
-    /// Defaults the target language to English.
-    pub async fn handle_context_menu(&self, ctx: &Context, interaction: &CommandInteraction) {
-        let content = match interaction.data.target() {
-            Some(ResolvedTarget::Message(m)) => m.content.clone(),
-            _ => String::new(),
-        };
-        if content.trim().is_empty() {
-            self.respond_ephemeral(ctx, interaction, "That message has no text to translate.")
-                .await;
-            return;
-        }
-
-        let target = "en".to_string();
-        let (detected, translated) = match self.translate_text(&content, &target).await {
-            Some(t) => t,
-            None => {
-                self.respond_ephemeral(ctx, interaction, "Translation service unavailable.")
-                    .await;
-                return;
-            }
-        };
-
-        let embed = Self::build_embed(&detected, &target, &content, &translated);
-        let response = CreateInteractionResponseMessage::new()
-            .embed(embed)
-            .components(vec![Self::buttons()]);
-        if interaction
-            .create_response(&ctx.http, CreateInteractionResponse::Message(response))
-            .await
-            .is_ok()
-        {
-            // Stash state under the response message id so the buttons work.
-            if let Ok(sent) = interaction.get_response(&ctx.http).await {
-                crate::utils::cache::bounded_insert(
-                    &self.states,
-                    sent.id,
-                    TranslateState {
-                        src: detected,
-                        dest: target,
-                        origin: content,
-                        translated,
-                    },
-                    MAX_STATES,
-                );
-            }
-        }
-    }
-
-    async fn respond_ephemeral(
-        &self,
-        ctx: &Context,
-        interaction: &CommandInteraction,
-        content: &str,
-    ) {
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content(content)
-                        .ephemeral(true),
-                ),
-            )
-            .await;
+    pub fn new(_state: Arc<AppState>) -> Arc<Self> {
+        Arc::new(Self)
     }
 }
 
 #[async_trait]
 impl Cog for TranslateCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        if inv.command != "translate" && inv.command != "trans" {
-            return false;
-        }
-        let args = inv.args;
-
-        if args.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    "Usage: translate [--to <lang>] <text>\nExample: translate --to es Hello world",
-                )
-                .await;
-            return true;
-        }
-
-        // Optional `--to <lang>` flag (default English), accepted at the front.
-        let (target_lang, text) = if let Some(rest) = args.strip_prefix("--to ") {
-            let mut parts = rest.trim_start().splitn(2, ' ');
-            let lang = parts.next().unwrap_or("en").trim();
-            let text = parts.next().unwrap_or("").trim();
-            (lang.to_string(), text.to_string())
-        } else {
-            ("en".to_string(), args.to_string())
-        };
-
-        if text.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "Please provide text to translate.")
-                .await;
-            return true;
-        }
-
-        let (detected, translated) = match self.translate_text(&text, &target_lang).await {
-            Some(t) => t,
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Translation service unavailable.")
-                    .await;
-                return true;
-            }
-        };
-
-        let embed = Self::build_embed(&detected, &target_lang, &text, &translated);
-        let builder = CreateMessage::new()
-            .embed(embed)
-            .components(vec![Self::buttons()])
-            .reference_message(msg);
-
-        match msg.channel_id.send_message(&ctx.http, builder).await {
-            Ok(sent) => {
-                crate::utils::cache::bounded_insert(
-                    &self.states,
-                    sent.id,
-                    TranslateState {
-                        src: detected,
-                        dest: target_lang,
-                        origin: text,
-                        translated,
-                    },
-                    MAX_STATES,
-                );
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to send translation message");
-            }
-        }
-        true
-    }
-
-    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+    async fn on_component(&self, ctx: &serenity::all::Context, interaction: &ComponentInteraction) {
         let custom_id = interaction.data.custom_id.as_str();
         if !custom_id.starts_with("tr:") {
             return;
@@ -262,7 +50,7 @@ impl Cog for TranslateCog {
 
         // Build an owned (title, body) so the DashMap guard is dropped before we
         // await the interaction response.
-        let view = match self.states.get(&interaction.message.id) {
+        let view = match STATES.get(&interaction.message.id) {
             Some(state) => match custom_id {
                 ORIGINAL_ID => Some((
                     format!("Original: {}", language_name(&state.src)),
@@ -308,6 +96,122 @@ impl Cog for TranslateCog {
     }
 }
 
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![translate()]
+}
+
+// ---- commands ---------------------------------------------------------------
+
+/// Translate text into a target language.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Translate",
+    aliases("trans")
+)]
+async fn translate(
+    ctx: Context<'_>,
+    #[description = "Target language"] to: Option<String>,
+    #[description = "Text"]
+    #[rest]
+    text: String,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let target_lang = to.unwrap_or_else(|| "en".to_string());
+
+    let (detected, translated) = match translate_text(state, &text, &target_lang).await {
+        Some(t) => t,
+        None => return send_error(ctx, "Translation service unavailable.").await,
+    };
+
+    let embed = build_embed(&detected, &target_lang, &text, &translated);
+    let reply = poise::CreateReply::default()
+        .embed(embed)
+        .components(vec![buttons()]);
+
+    let handle = ctx.send(reply).await?;
+    let sent = handle.message().await?;
+    crate::utils::cache::bounded_insert(
+        &STATES,
+        sent.id,
+        TranslateState {
+            src: detected,
+            dest: target_lang,
+            origin: text,
+            translated,
+        },
+        MAX_STATES,
+    );
+    Ok(())
+}
+
+// ---- shared helpers ---------------------------------------------------------
+
+/// Call the unofficial Google Translate (gtx) endpoint. Returns the detected
+/// source language code and the translated text, or `None` on failure.
+async fn translate_text(state: &AppState, text: &str, target: &str) -> Option<(String, String)> {
+    let response = state
+        .http
+        .get("https://translate.googleapis.com/translate_a/single")
+        .query(&[
+            ("client", "gtx"),
+            ("sl", "auto"),
+            ("tl", target),
+            ("dt", "t"),
+            ("q", text),
+        ])
+        .send()
+        .await
+        .ok()?;
+
+    // Response format: [[["translated","original",...],...],null,"detected_lang",...]
+    let json: serde_json::Value = response.json().await.ok()?;
+    let translated = json.get(0).and_then(|arr| arr.as_array()).map(|chunks| {
+        chunks
+            .iter()
+            .filter_map(|chunk| chunk.get(0).and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("")
+    })?;
+    let detected = json
+        .get(2)
+        .and_then(|v| v.as_str())
+        .unwrap_or("auto")
+        .to_string();
+
+    Some((detected, translated))
+}
+
+/// Build the summary embed shown alongside the toggle buttons (two fields, pink, timestamped).
+fn build_embed(src: &str, dest: &str, origin: &str, translated: &str) -> CreateEmbed {
+    CreateEmbed::new()
+        .title("Translating Text")
+        .color(colors::PINK)
+        .timestamp(Timestamp::now())
+        .field(
+            format!("Original: {}", language_name(src)),
+            non_empty(format::truncate(origin, 1000)),
+            false,
+        )
+        .field(
+            format!("Translated: {}", language_name(dest)),
+            non_empty(format::truncate(translated, 1000)),
+            false,
+        )
+}
+
+/// The "Original" / "Translated" toggle row.
+fn buttons() -> CreateActionRow {
+    CreateActionRow::Buttons(vec![
+        CreateButton::new(ORIGINAL_ID)
+            .label("Original")
+            .style(ButtonStyle::Secondary),
+        CreateButton::new(TRANSLATED_ID)
+            .label("Translated")
+            .style(ButtonStyle::Success),
+    ])
+}
+
 /// Discord rejects empty embed field/description values; fall back to a
 /// zero-width space when the text is blank.
 fn non_empty(s: &str) -> String {
@@ -327,8 +231,8 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Map a language code to a human-readable name. Unknown codes fall back to
-/// the capitalized code itself.
+/// Map a language code to a human-readable name. Unknown codes fall back to the
+/// capitalized code itself.
 fn language_name(code: &str) -> String {
     let lc = code.to_ascii_lowercase();
     let name = match lc.as_str() {

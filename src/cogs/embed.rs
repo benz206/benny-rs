@@ -1,20 +1,22 @@
 use super::Cog;
-use crate::state::{AppState, CommandInvocation};
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::AppState;
 use crate::utils::format::truncate;
-use crate::utils::{colors, embeds, parse};
+use crate::utils::{colors, embeds};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::{Value, json};
 use serenity::all::{
     ActionRowComponent, ButtonStyle, Channel, ChannelId, ChannelType, Colour, ComponentInteraction,
-    ComponentInteractionDataKind, Context, CreateActionRow, CreateAttachment, CreateButton,
-    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
+    ComponentInteractionDataKind, CreateActionRow, CreateAttachment, CreateButton, CreateEmbed,
+    CreateEmbedAuthor, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
     CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
     CreateModal, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, GuildId,
-    InputTextStyle, Message, ModalInteraction, Permissions, Timestamp, UserId,
+    InputTextStyle, ModalInteraction, Permissions, Timestamp, UserId,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 // ---- custom_id namespace --------------------------------------------------
 //
@@ -294,92 +296,28 @@ struct Builder {
     owner_id: u64,
 }
 
+// ---- module-level session stores ------------------------------------------
+//
+// Command fns are free functions and cannot see cog struct fields, so both
+// session maps live here as module statics shared by command fns and the
+// `on_component`/`on_modal` hooks.
+
+static BUILDERS: LazyLock<DashMap<u64, Builder>> = LazyLock::new(DashMap::new);
+static TEXT_SESSIONS: LazyLock<DashMap<u64, EmbedData>> = LazyLock::new(DashMap::new);
+
 pub struct EmbedCog {
     state: Arc<AppState>,
-    /// Interactive builder sessions, keyed by builder message id.
-    builders: DashMap<u64, Builder>,
-    /// Legacy text-command sessions, keyed by user id.
-    text_sessions: DashMap<u64, EmbedData>,
 }
 
 impl EmbedCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self {
-            state,
-            builders: DashMap::new(),
-            text_sessions: DashMap::new(),
-        })
+        Arc::new(Self { state })
     }
 }
 
 #[async_trait]
 impl Cog for EmbedCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        if !matches!(inv.command, "embed" | "customembed" | "cembed" | "ce") {
-            return false;
-        }
-        let mut it = inv.args.splitn(2, ' ');
-        let subcmd = it.next().unwrap_or("").trim();
-        let arg = it.next().unwrap_or("").trim();
-        let user_id = msg.author.id.get();
-
-        match subcmd {
-            // Interactive builder.
-            "" | "create" | "new" | "builder" | "edit" | "make" => {
-                self.open_builder(ctx, msg, EmbedData::starter()).await;
-            }
-            // Import then open the interactive builder pre-filled.
-            "import" | "load" => {
-                if arg.is_empty() {
-                    let _ = msg
-                        .channel_id
-                        .say(
-                            &ctx.http,
-                            "Usage: `embed import <json | https://mystb.in/...>`",
-                        )
-                        .await;
-                    return true;
-                }
-                match self.parse_import(arg).await {
-                    Ok(data) => self.open_builder(ctx, msg, data).await,
-                    Err(e) => {
-                        let _ = msg
-                            .channel_id
-                            .send_message(
-                                &ctx.http,
-                                CreateMessage::new().embed(embeds::error_embed(&e)),
-                            )
-                            .await;
-                    }
-                }
-            }
-            // Legacy text subcommands (operate on a per-user session).
-            "title" | "description" | "desc" | "color" | "colour" | "author" | "footer"
-            | "field" | "preview" | "show" | "send" | "clear" | "reset" => {
-                self.handle_text(ctx, msg, user_id, subcmd, arg).await;
-            }
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::info_embed(
-                            "Embed Creator",
-                            "`embed create` — open the interactive builder\n\
-                             `embed import <json|mystbin>` — import then edit\n\n\
-                             Quick text commands:\n\
-                             `embed title <text>` · `embed description <text>` · `embed color <hex>`\n\
-                             `embed author <text>` · `embed footer <text>` · `embed field <name> | <value>`\n\
-                             `embed preview` · `embed send <#channel>` · `embed clear`",
-                        )),
-                    )
-                    .await;
-            }
-        }
-        true
-    }
-
-    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+    async fn on_component(&self, ctx: &serenity::all::Context, interaction: &ComponentInteraction) {
         let cid = interaction.data.custom_id.as_str();
         if !cid.starts_with(ID_PREFIX) {
             return;
@@ -387,10 +325,10 @@ impl Cog for EmbedCog {
         let msg_id = interaction.message.id.get();
 
         // Ownership / session check.
-        let owner = match self.builders.get(&msg_id) {
+        let owner = match BUILDERS.get(&msg_id) {
             Some(b) => b.owner_id,
             None => {
-                self.ephemeral(
+                ephemeral(
                     ctx,
                     interaction,
                     embeds::error_embed("This embed builder has expired."),
@@ -400,7 +338,7 @@ impl Cog for EmbedCog {
             }
         };
         if interaction.user.id.get() != owner {
-            self.ephemeral(
+            ephemeral(
                 ctx,
                 interaction,
                 embeds::error_embed("This embed builder isn't yours to control."),
@@ -412,8 +350,7 @@ impl Cog for EmbedCog {
         match cid {
             // Buttons that open a pre-filled modal.
             BTN_AUTHOR | BTN_BASE | BTN_IMAGES | BTN_FOOTER => {
-                let data = self
-                    .builders
+                let data = BUILDERS
                     .get(&msg_id)
                     .map(|b| b.data.clone())
                     .unwrap_or_default();
@@ -428,13 +365,12 @@ impl Cog for EmbedCog {
                     .await;
             }
             BTN_ADDFIELD => {
-                let full = self
-                    .builders
+                let full = BUILDERS
                     .get(&msg_id)
                     .map(|b| b.data.fields.len() >= MAX_FIELDS)
                     .unwrap_or(false);
                 if full {
-                    self.ephemeral(
+                    ephemeral(
                         ctx,
                         interaction,
                         embeds::warning_embed("This embed already has the maximum of 25 fields."),
@@ -460,11 +396,11 @@ impl Cog for EmbedCog {
             // Switch to the "remove a field" sub-view.
             BTN_REMOVEFIELD => {
                 let (embed, components) = {
-                    let b = self.builders.get(&msg_id);
+                    let b = BUILDERS.get(&msg_id);
                     let Some(b) = b else { return };
                     if b.data.fields.is_empty() {
                         drop(b);
-                        self.ephemeral(
+                        ephemeral(
                             ctx,
                             interaction,
                             embeds::warning_embed("There are no fields to remove."),
@@ -474,26 +410,24 @@ impl Cog for EmbedCog {
                     }
                     (b.data.to_create_embed(), build_remove_components(&b.data))
                 };
-                self.update(ctx, interaction, embed, components).await;
+                update(ctx, interaction, embed, components).await;
             }
             // Switch to the "send to a channel" sub-view.
             BTN_SEND => {
-                let embed = self
-                    .builders
+                let embed = BUILDERS
                     .get(&msg_id)
                     .map(|b| b.data.to_create_embed())
                     .unwrap_or_default();
-                self.update(ctx, interaction, embed, build_send_components())
-                    .await;
+                update(ctx, interaction, embed, build_send_components()).await;
             }
             // Back to the main builder view.
             BTN_BACK => {
                 let (embed, components) = {
-                    let b = self.builders.get(&msg_id);
+                    let b = BUILDERS.get(&msg_id);
                     let Some(b) = b else { return };
                     (b.data.to_create_embed(), build_main_components(&b.data))
                 };
-                self.update(ctx, interaction, embed, components).await;
+                update(ctx, interaction, embed, components).await;
             }
             // A field was chosen for removal.
             SEL_REMOVE => {
@@ -504,7 +438,7 @@ impl Cog for EmbedCog {
                     _ => None,
                 };
                 let (embed, components) = {
-                    let mut b = match self.builders.get_mut(&msg_id) {
+                    let mut b = match BUILDERS.get_mut(&msg_id) {
                         Some(b) => b,
                         None => return,
                     };
@@ -513,7 +447,7 @@ impl Cog for EmbedCog {
                     }
                     (b.data.to_create_embed(), build_main_components(&b.data))
                 };
-                self.update(ctx, interaction, embed, components).await;
+                update(ctx, interaction, embed, components).await;
             }
             // A channel was chosen to send to.
             SEL_SEND => {
@@ -524,7 +458,7 @@ impl Cog for EmbedCog {
                     _ => None,
                 };
                 let (embed, components, preview) = {
-                    let b = match self.builders.get(&msg_id) {
+                    let b = match BUILDERS.get(&msg_id) {
                         Some(b) => b,
                         None => return,
                     };
@@ -535,14 +469,12 @@ impl Cog for EmbedCog {
                     )
                 };
                 // Restore the main view first, then report the outcome as a followup.
-                self.update(ctx, interaction, embed, components).await;
+                update(ctx, interaction, embed, components).await;
                 if let Some(channel) = channel {
                     // The channel select is guild-scoped, but only shows that the
                     // user can *view* a channel — confirm they can post there too.
                     if let Some(gid) = interaction.guild_id
-                        && !self
-                            .user_can_send_in(ctx, gid, interaction.user.id, channel)
-                            .await
+                        && !user_can_send_in(ctx, gid, interaction.user.id, channel).await
                     {
                         let followup = CreateInteractionResponseFollowup::new()
                             .embed(embeds::error_embed(
@@ -573,8 +505,7 @@ impl Cog for EmbedCog {
             }
             // Export the embed JSON as a file attachment.
             BTN_EXPORT_JSON => {
-                let pretty = self
-                    .builders
+                let pretty = BUILDERS
                     .get(&msg_id)
                     .map(|b| serde_json::to_string_pretty(&b.data.to_json()).unwrap_or_default())
                     .unwrap_or_default();
@@ -597,8 +528,7 @@ impl Cog for EmbedCog {
             // Export the embed JSON to a Mystbin paste.
             BTN_EXPORT_MYST => {
                 let _ = interaction.defer_ephemeral(&ctx.http).await;
-                let pretty = self
-                    .builders
+                let pretty = BUILDERS
                     .get(&msg_id)
                     .map(|b| serde_json::to_string_pretty(&b.data.to_json()).unwrap_or_default())
                     .unwrap_or_default();
@@ -616,8 +546,8 @@ impl Cog for EmbedCog {
             }
             // Discard the session and strip the controls.
             BTN_CANCEL => {
-                self.builders.remove(&msg_id);
-                self.update_no_components(
+                BUILDERS.remove(&msg_id);
+                update_no_components(
                     ctx,
                     interaction,
                     CreateEmbed::new()
@@ -630,19 +560,18 @@ impl Cog for EmbedCog {
             }
             // Finalize: keep the embed, remove the controls.
             BTN_COMPLETE => {
-                let embed = self
-                    .builders
+                let embed = BUILDERS
                     .get(&msg_id)
                     .map(|b| b.data.to_create_embed())
                     .unwrap_or_default();
-                self.builders.remove(&msg_id);
-                self.update_no_components(ctx, interaction, embed).await;
+                BUILDERS.remove(&msg_id);
+                update_no_components(ctx, interaction, embed).await;
             }
             _ => {}
         }
     }
 
-    async fn on_modal(&self, ctx: &Context, interaction: &ModalInteraction) {
+    async fn on_modal(&self, ctx: &serenity::all::Context, interaction: &ModalInteraction) {
         let cid = interaction.data.custom_id.as_str();
         if !cid.starts_with(ID_PREFIX) {
             return;
@@ -653,7 +582,7 @@ impl Cog for EmbedCog {
         let msg_id = msg.id.get();
 
         // Ownership / session check.
-        let owner = match self.builders.get(&msg_id) {
+        let owner = match BUILDERS.get(&msg_id) {
             Some(b) => b.owner_id,
             None => return,
         };
@@ -673,7 +602,7 @@ impl Cog for EmbedCog {
             match self.parse_import(link).await {
                 Ok(data) => {
                     let (embed, components) = {
-                        let mut b = match self.builders.get_mut(&msg_id) {
+                        let mut b = match BUILDERS.get_mut(&msg_id) {
                             Some(b) => b,
                             None => return,
                         };
@@ -709,7 +638,7 @@ impl Cog for EmbedCog {
 
         // Mutate the session for the property modals, then refresh the preview.
         let (embed, components) = {
-            let mut b = match self.builders.get_mut(&msg_id) {
+            let mut b = match BUILDERS.get_mut(&msg_id) {
                 Some(b) => b,
                 None => return,
             };
@@ -787,139 +716,330 @@ impl Cog for EmbedCog {
     }
 }
 
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![embed()]
+}
+
+// ---- commands --------------------------------------------------------------
+
+/// Build or edit a custom embed interactively or step by step.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    subcommand_required,
+    subcommands(
+        "embed_new",
+        "embed_title",
+        "embed_description",
+        "embed_color",
+        "embed_author",
+        "embed_footer",
+        "embed_field",
+        "embed_preview",
+        "embed_send",
+        "embed_clear"
+    )
+)]
+async fn embed(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Open the interactive embed builder.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "new",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_new(ctx: Context<'_>) -> Result<(), Error> {
+    let data = EmbedData::starter();
+    let embed = data.to_create_embed();
+    let components = build_main_components(&data);
+    let handle = ctx
+        .send(poise::CreateReply::default().embed(embed).components(components))
+        .await?;
+    let sent = handle.message().await?;
+    BUILDERS.insert(
+        sent.id.get(),
+        Builder {
+            data,
+            owner_id: ctx.author().id.get(),
+        },
+    );
+    Ok(())
+}
+
+/// Set the title of your embed draft.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "title",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_title(
+    ctx: Context<'_>,
+    #[description = "Title text"]
+    #[rest]
+    title: String,
+) -> Result<(), Error> {
+    TEXT_SESSIONS
+        .entry(ctx.author().id.get())
+        .or_default()
+        .title = opt(&title);
+    send_embed(
+        ctx,
+        embeds::success_embed("Embed Creator", "Title set."),
+    )
+    .await
+}
+
+/// Set the description of your embed draft.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "description",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_description(
+    ctx: Context<'_>,
+    #[description = "Description text"]
+    #[rest]
+    description: String,
+) -> Result<(), Error> {
+    TEXT_SESSIONS
+        .entry(ctx.author().id.get())
+        .or_default()
+        .description = opt(&description);
+    send_embed(
+        ctx,
+        embeds::success_embed("Embed Creator", "Description set."),
+    )
+    .await
+}
+
+/// Set the color of your embed draft (hex, e.g. ff5733).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "color",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_color(
+    ctx: Context<'_>,
+    #[description = "Hex color (e.g. ff5733)"] color: String,
+) -> Result<(), Error> {
+    match parse_hex_color(&color) {
+        Some(c) => {
+            TEXT_SESSIONS
+                .entry(ctx.author().id.get())
+                .or_default()
+                .color = Some(c);
+            send_embed(
+                ctx,
+                embeds::success_embed("Embed Creator", &format!("Color set to #{c:06X}.")),
+            )
+            .await
+        }
+        None => send_error(ctx, "Invalid hex color. Example: `embed color ff5733`").await,
+    }
+}
+
+/// Set the author name of your embed draft.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "author",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_author(
+    ctx: Context<'_>,
+    #[description = "Author text"]
+    #[rest]
+    author: String,
+) -> Result<(), Error> {
+    TEXT_SESSIONS
+        .entry(ctx.author().id.get())
+        .or_default()
+        .author_name = opt(&author);
+    send_embed(
+        ctx,
+        embeds::success_embed("Embed Creator", "Author set."),
+    )
+    .await
+}
+
+/// Set the footer text of your embed draft.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "footer",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_footer(
+    ctx: Context<'_>,
+    #[description = "Footer text"]
+    #[rest]
+    footer: String,
+) -> Result<(), Error> {
+    TEXT_SESSIONS
+        .entry(ctx.author().id.get())
+        .or_default()
+        .footer_text = opt(&footer);
+    send_embed(
+        ctx,
+        embeds::success_embed("Embed Creator", "Footer set."),
+    )
+    .await
+}
+
+/// Add a field to your embed draft.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "field",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_field(
+    ctx: Context<'_>,
+    #[description = "Field name"] name: String,
+    #[description = "Field value"] value: String,
+    #[description = "Inline (true/false)"] inline: Option<bool>,
+) -> Result<(), Error> {
+    let user_id = ctx.author().id.get();
+    let mut session = TEXT_SESSIONS.entry(user_id).or_default();
+    if session.fields.len() >= MAX_FIELDS {
+        drop(session);
+        return send_error(ctx, "This embed already has 25 fields.").await;
+    }
+    session.fields.push(EmbedField {
+        name: truncate(name.trim(), 256).to_string(),
+        value: truncate(value.trim(), 1024).to_string(),
+        inline: inline.unwrap_or(false),
+    });
+    drop(session);
+    send_embed(
+        ctx,
+        embeds::success_embed("Embed Creator", "Field added."),
+    )
+    .await
+}
+
+/// Preview your current embed draft.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "preview",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_preview(ctx: Context<'_>) -> Result<(), Error> {
+    let user_id = ctx.author().id.get();
+    match TEXT_SESSIONS.get(&user_id) {
+        Some(session) => {
+            let embed = session.to_create_embed();
+            drop(session);
+            send_embed(ctx, embed).await
+        }
+        None => {
+            send_error(
+                ctx,
+                "No active embed. Start with `embed title <text>` or `embed new`.",
+            )
+            .await
+        }
+    }
+}
+
+/// Send your embed draft to a channel.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "send",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_send(
+    ctx: Context<'_>,
+    #[description = "Channel to send to"] channel: ChannelId,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let sctx = ctx.serenity_context();
+    let user_id = ctx.author().id.get();
+
+    if !user_can_send_in(sctx, guild_id, ctx.author().id, channel).await {
+        return send_error(
+            ctx,
+            "That channel isn't in this server, or you can't send messages there.",
+        )
+        .await;
+    }
+
+    let Some(session) = TEXT_SESSIONS.get(&user_id) else {
+        return send_error(ctx, "No active embed to send.").await;
+    };
+    let embed = session.to_create_embed();
+    drop(session);
+
+    match channel
+        .send_message(&sctx.http, CreateMessage::new().embed(embed))
+        .await
+    {
+        Ok(_) => {
+            TEXT_SESSIONS.remove(&user_id);
+            send_embed(
+                ctx,
+                embeds::success_embed(
+                    "Embed Creator",
+                    &format!("Embed sent to <#{}>!", channel.get()),
+                ),
+            )
+            .await
+        }
+        Err(_) => {
+            send_error(ctx, "I couldn't send to that channel. Check my permissions.").await
+        }
+    }
+}
+
+/// Clear your embed draft.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Embed",
+    rename = "clear",
+    required_permissions = "MANAGE_MESSAGES"
+)]
+async fn embed_clear(ctx: Context<'_>) -> Result<(), Error> {
+    TEXT_SESSIONS.remove(&ctx.author().id.get());
+    send_embed(
+        ctx,
+        embeds::success_embed("Embed Creator", "Embed session cleared."),
+    )
+    .await
+}
+
+// ---- EmbedCog helpers that require self.state -----------------------------
+
 impl EmbedCog {
-    // ---- interactive builder helpers --------------------------------------
-
-    /// Whether `user_id` may have the bot post into `channel`: the channel must
-    /// belong to `guild_id` and the user must hold Send Messages there. Denies
-    /// on a cold cache rather than guessing.
-    async fn user_can_send_in(
-        &self,
-        ctx: &Context,
-        guild_id: GuildId,
-        user_id: UserId,
-        channel: ChannelId,
-    ) -> bool {
-        let gc = match channel.to_channel(&ctx.http).await {
-            Ok(Channel::Guild(gc)) if gc.guild_id == guild_id => gc,
-            _ => return false,
-        };
-        let Ok(member) = guild_id.member(&ctx.http, user_id).await else {
-            return false;
-        };
-        match ctx.cache.guild(guild_id) {
-            Some(g) => {
-                let p = g.user_permissions_in(&gc, &member);
-                p.contains(Permissions::ADMINISTRATOR) || p.contains(Permissions::SEND_MESSAGES)
-            }
-            None => false,
-        }
-    }
-
-    /// Post a fresh builder message and register its session.
-    async fn open_builder(&self, ctx: &Context, msg: &Message, data: EmbedData) {
-        let builder = CreateMessage::new()
-            .reference_message(msg)
-            .embed(data.to_create_embed())
-            .components(build_main_components(&data));
-        match msg.channel_id.send_message(&ctx.http, builder).await {
-            Ok(sent) => {
-                self.builders.insert(
-                    sent.id.get(),
-                    Builder {
-                        data,
-                        owner_id: msg.author.id.get(),
-                    },
-                );
-            }
-            Err(e) => tracing::error!(error = ?e, "failed to open embed builder"),
-        }
-    }
-
-    /// Respond to a component with an `UpdateMessage` (embed + components).
-    async fn update(
-        &self,
-        ctx: &Context,
-        interaction: &ComponentInteraction,
-        embed: CreateEmbed,
-        components: Vec<CreateActionRow>,
-    ) {
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new()
-                        .embed(embed)
-                        .components(components),
-                ),
-            )
-            .await;
-    }
-
-    /// Respond to a component with an `UpdateMessage` that strips all controls.
-    async fn update_no_components(
-        &self,
-        ctx: &Context,
-        interaction: &ComponentInteraction,
-        embed: CreateEmbed,
-    ) {
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new()
-                        .embed(embed)
-                        .components(vec![]),
-                ),
-            )
-            .await;
-    }
-
-    /// Send a private (ephemeral) embed in response to a component.
-    async fn ephemeral(
-        &self,
-        ctx: &Context,
-        interaction: &ComponentInteraction,
-        embed: CreateEmbed,
-    ) {
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .embed(embed)
-                        .ephemeral(true),
-                ),
-            )
-            .await;
-    }
-
-    // ---- import / export over Mystbin -------------------------------------
-
-    /// Parse an import payload: a raw JSON string, or a `https://mystb.in/<id>`
-    /// link whose paste content is JSON.
-    async fn parse_import(&self, input: &str) -> Result<EmbedData, String> {
-        let input = input.trim();
-        let raw = if let Some(rest) = input
-            .strip_prefix("https://mystb.in/")
-            .or_else(|| input.strip_prefix("http://mystb.in/"))
-        {
-            let id = rest.split(['/', '?', '#']).next().unwrap_or("");
-            if id.is_empty() {
-                return Err("That doesn't look like a valid Mystbin link.".to_string());
-            }
-            match self.fetch_mystbin(id).await {
-                Some(c) => c,
-                None => return Err("Couldn't fetch that Mystbin paste.".to_string()),
-            }
-        } else {
-            input.to_string()
-        };
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|_| "This doesn't seem to be valid JSON or a Mystbin link.".to_string())?;
-        Ok(EmbedData::from_json(&value))
-    }
-
     /// Upload text to mystb.in, returning the paste link.
     async fn upload_to_mystbin(&self, text: &str) -> Option<String> {
         let body = json!({ "files": [{ "content": text, "filename": "custom_embed.json" }] });
@@ -960,173 +1080,111 @@ impl EmbedCog {
             .map(str::to_string)
     }
 
-    // ---- legacy text subcommands ------------------------------------------
+    /// Parse an import payload: a raw JSON string, or a `https://mystb.in/<id>`
+    /// link whose paste content is JSON.
+    async fn parse_import(&self, input: &str) -> Result<EmbedData, String> {
+        let input = input.trim();
+        let raw = if let Some(rest) = input
+            .strip_prefix("https://mystb.in/")
+            .or_else(|| input.strip_prefix("http://mystb.in/"))
+        {
+            let id = rest.split(['/', '?', '#']).next().unwrap_or("");
+            if id.is_empty() {
+                return Err("That doesn't look like a valid Mystbin link.".to_string());
+            }
+            match self.fetch_mystbin(id).await {
+                Some(c) => c,
+                None => return Err("Couldn't fetch that Mystbin paste.".to_string()),
+            }
+        } else {
+            input.to_string()
+        };
+        let value: Value = serde_json::from_str(&raw)
+            .map_err(|_| "This doesn't seem to be valid JSON or a Mystbin link.".to_string())?;
+        Ok(EmbedData::from_json(&value))
+    }
+}
 
-    async fn handle_text(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        user_id: u64,
-        subcmd: &str,
-        arg: &str,
-    ) {
-        match subcmd {
-            "title" => {
-                self.text_sessions.entry(user_id).or_default().title = opt(arg);
-                self.text_ack(ctx, msg, "Title set.").await;
-            }
-            "description" | "desc" => {
-                self.text_sessions.entry(user_id).or_default().description = opt(arg);
-                self.text_ack(ctx, msg, "Description set.").await;
-            }
-            "color" | "colour" => match parse_hex_color(arg) {
-                Some(c) => {
-                    self.text_sessions.entry(user_id).or_default().color = Some(c);
-                    self.text_ack(ctx, msg, &format!("Color set to #{c:06X}."))
-                        .await;
-                }
-                None => {
-                    let _ = msg
-                        .channel_id
-                        .say(
-                            &ctx.http,
-                            "Invalid hex color. Example: `embed color ff5733`",
-                        )
-                        .await;
-                }
-            },
-            "author" => {
-                self.text_sessions.entry(user_id).or_default().author_name = opt(arg);
-                self.text_ack(ctx, msg, "Author set.").await;
-            }
-            "footer" => {
-                self.text_sessions.entry(user_id).or_default().footer_text = opt(arg);
-                self.text_ack(ctx, msg, "Footer set.").await;
-            }
-            "field" => {
-                let Some((name, value)) = arg.split_once('|') else {
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "Usage: `embed field <name> | <value>`")
-                        .await;
-                    return;
-                };
-                let mut session = self.text_sessions.entry(user_id).or_default();
-                if session.fields.len() >= MAX_FIELDS {
-                    drop(session);
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "This embed already has 25 fields.")
-                        .await;
-                    return;
-                }
-                session.fields.push(EmbedField {
-                    name: truncate(name.trim(), 256).to_string(),
-                    value: truncate(value.trim(), 1024).to_string(),
-                    inline: false,
-                });
-                drop(session);
-                self.text_ack(ctx, msg, "Field added.").await;
-            }
-            "preview" | "show" => {
-                match self.text_sessions.get(&user_id) {
-                    Some(session) => {
-                        let embed = session.to_create_embed();
-                        drop(session);
-                        let _ = msg
-                            .channel_id
-                            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-                            .await;
-                    }
-                    None => {
-                        let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "No active embed. Start with `embed title <text>` or `embed create`.")
-                        .await;
-                    }
-                }
-            }
-            "send" => {
-                let Some(channel_id) = parse::parse_channel_id(arg) else {
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "Usage: `embed send <#channel>`")
-                        .await;
-                    return;
-                };
-                // Channel ids are global, so an unchecked id lets a user (even
-                // from a DM) make the bot post into any channel in any guild.
-                // Require a channel in this guild that the author can post to.
-                let Some(guild_id) = msg.guild_id else {
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "You can only send embeds from within a server.")
-                        .await;
-                    return;
-                };
-                let target = ChannelId::new(channel_id);
-                if !self
-                    .user_can_send_in(ctx, guild_id, msg.author.id, target)
-                    .await
-                {
-                    let _ = msg
-                        .channel_id
-                        .say(
-                            &ctx.http,
-                            "That channel isn't in this server, or you can't send messages there.",
-                        )
-                        .await;
-                    return;
-                }
-                match self.text_sessions.get(&user_id) {
-                    Some(session) => {
-                        let embed = session.to_create_embed();
-                        drop(session);
-                        match target
-                            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-                            .await
-                        {
-                            Ok(_) => {
-                                self.text_sessions.remove(&user_id);
-                                self.text_ack(ctx, msg, &format!("Embed sent to <#{channel_id}>!"))
-                                    .await;
-                            }
-                            Err(_) => {
-                                let _ = msg
-                                    .channel_id
-                                    .say(
-                                        &ctx.http,
-                                        "I couldn't send to that channel. Check my permissions.",
-                                    )
-                                    .await;
-                            }
-                        }
-                    }
-                    None => {
-                        let _ = msg
-                            .channel_id
-                            .say(&ctx.http, "No active embed to send.")
-                            .await;
-                    }
-                }
-            }
-            "clear" | "reset" => {
-                self.text_sessions.remove(&user_id);
-                self.text_ack(ctx, msg, "Embed session cleared.").await;
-            }
-            _ => {}
+// ---- free helpers: interaction responses ----------------------------------
+
+/// Whether `user_id` may have the bot post into `channel`: the channel must
+/// belong to `guild_id` and the user must hold Send Messages there. Denies
+/// on a cold cache rather than guessing.
+async fn user_can_send_in(
+    ctx: &serenity::all::Context,
+    guild_id: GuildId,
+    user_id: UserId,
+    channel: ChannelId,
+) -> bool {
+    let gc = match channel.to_channel(&ctx.http).await {
+        Ok(Channel::Guild(gc)) if gc.guild_id == guild_id => gc,
+        _ => return false,
+    };
+    let Ok(member) = guild_id.member(&ctx.http, user_id).await else {
+        return false;
+    };
+    match ctx.cache.guild(guild_id) {
+        Some(g) => {
+            let p = g.user_permissions_in(&gc, &member);
+            p.contains(Permissions::ADMINISTRATOR) || p.contains(Permissions::SEND_MESSAGES)
         }
+        None => false,
     }
+}
 
-    async fn text_ack(&self, ctx: &Context, msg: &Message, text: &str) {
-        let _ = msg
-            .channel_id
-            .send_message(
-                &ctx.http,
-                CreateMessage::new().embed(embeds::success_embed("Embed Creator", text)),
-            )
-            .await;
-    }
+/// Respond to a component with an `UpdateMessage` (embed + components).
+async fn update(
+    ctx: &serenity::all::Context,
+    interaction: &ComponentInteraction,
+    embed: CreateEmbed,
+    components: Vec<CreateActionRow>,
+) {
+    let _ = interaction
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(components),
+            ),
+        )
+        .await;
+}
+
+/// Respond to a component with an `UpdateMessage` that strips all controls.
+async fn update_no_components(
+    ctx: &serenity::all::Context,
+    interaction: &ComponentInteraction,
+    embed: CreateEmbed,
+) {
+    let _ = interaction
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![]),
+            ),
+        )
+        .await;
+}
+
+/// Send a private (ephemeral) embed in response to a component.
+async fn ephemeral(
+    ctx: &serenity::all::Context,
+    interaction: &ComponentInteraction,
+    embed: CreateEmbed,
+) {
+    let _ = interaction
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .ephemeral(true),
+            ),
+        )
+        .await;
 }
 
 // ---- free helpers: components ---------------------------------------------

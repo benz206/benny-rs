@@ -2,14 +2,15 @@ use super::Cog;
 use crate::entities::{
     goodbye_config, logging, prefixes, sentinel_config, settings_users, welcome_config,
 };
-use crate::state::{AppState, CommandInvocation};
-use crate::utils::{colors, embeds, parse};
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::AppState;
+use crate::utils::{colors, embeds};
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    ButtonStyle, ComponentInteraction, Context, CreateActionRow, CreateButton, CreateEmbed,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, Message, Timestamp,
+    ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
+    CreateInteractionResponse, CreateInteractionResponseMessage, Timestamp,
 };
 use std::sync::Arc;
 
@@ -26,83 +27,41 @@ impl SettingsCog {
         Arc::new(Self { state })
     }
 
-    /// Structural validation of an IANA-style timezone string.
-    ///
-    /// A full IANA database check would require the `chrono-tz` crate (not a
-    /// dependency, and Cargo.toml is out of scope for this task), so this does a
-    /// format check: accepts the common single-word zones plus `Area/Location`
-    /// forms with sane characters. Rejects obvious garbage and whitespace.
-    fn is_valid_timezone(tz: &str) -> bool {
-        let tz = tz.trim();
-        if tz.is_empty() || tz.len() > 64 {
-            return false;
-        }
-        if !tz
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
-        {
-            return false;
-        }
-        let upper = tz.to_ascii_uppercase();
-        if matches!(
-            upper.as_str(),
-            "UTC" | "GMT" | "LOCAL" | "ZULU" | "UNIVERSAL"
-        ) {
-            return true;
-        }
-        // Otherwise require an Area/Location form: at least two non-empty
-        // segments, each beginning with a letter (e.g. America/New_York).
-        let segs: Vec<&str> = tz.split('/').collect();
-        segs.len() >= 2
-            && segs
-                .iter()
-                .all(|s| s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
-    }
+    /// Delete every per-guild settings row and drop the cached copies.
+    async fn do_reset(&self, guild_id: u64) {
+        let gid = guild_id as i64;
+        let _ = prefixes::Entity::delete_many()
+            .filter(prefixes::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
+            .await;
+        let _ = welcome_config::Entity::delete_many()
+            .filter(welcome_config::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
+            .await;
+        let _ = goodbye_config::Entity::delete_many()
+            .filter(goodbye_config::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
+            .await;
+        let _ = logging::Entity::delete_many()
+            .filter(logging::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
+            .await;
+        let _ = sentinel_config::Entity::delete_many()
+            .filter(sentinel_config::Column::GuildId.eq(gid))
+            .exec(self.state.servers_orm())
+            .await;
 
-    async fn guild_prefixes(&self, guild_id: u64) -> Vec<String> {
-        self.state.custom_prefixes(guild_id).await
+        self.state.prefix_cache.remove(&guild_id);
+        self.state.welcome_cache.remove(&guild_id);
+        self.state.goodbye_cache.remove(&guild_id);
+        self.state.logging_cache.remove(&guild_id);
+        self.state.sentinel_cache.remove(&guild_id);
     }
 }
 
 #[async_trait]
 impl Cog for SettingsCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        let guild_id = match msg.guild_id {
-            Some(g) => g.get(),
-            None => return false,
-        };
-        let mut it = inv.args.splitn(2, ' ');
-
-        match inv.command {
-            "settings" => {
-                let subcmd = it.next().unwrap_or("");
-                let arg = it.next().unwrap_or("").trim();
-                match subcmd {
-                    "show" | "view" | "list" => self.cmd_show(ctx, msg, guild_id).await,
-                    "reset" => self.cmd_reset(ctx, msg, guild_id).await,
-                    "timezone" | "tz" => self.cmd_timezone(ctx, msg, arg).await,
-                    _ => {
-                        let _ = msg
-                            .channel_id
-                            .say(
-                                &ctx.http,
-                                "Usage: `settings show` | `settings reset` | `settings timezone <IANA tz>`",
-                            )
-                            .await;
-                    }
-                }
-            }
-            "blacklist" => {
-                let subcmd = it.next().unwrap_or("");
-                let arg = it.next().unwrap_or("").trim();
-                self.cmd_blacklist(ctx, msg, subcmd, arg).await;
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+    async fn on_component(&self, ctx: &serenity::all::Context, interaction: &ComponentInteraction) {
         let custom_id = interaction.data.custom_id.as_str();
         if !custom_id.starts_with(CID_PREFIX) {
             return;
@@ -167,263 +126,305 @@ impl Cog for SettingsCog {
     }
 }
 
-impl SettingsCog {
-    async fn cmd_show(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        // --- Server settings ---
-        let prefixes = self.guild_prefixes(guild_id).await;
-        let prefix_str = if prefixes.is_empty() {
-            format!("`{}`", self.state.prefix())
-        } else {
-            prefixes
-                .iter()
-                .map(|p| format!("`{p}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![settings(), blacklist()]
+}
 
-        let welcome_str = match self.state.welcome_cache.get(&guild_id) {
-            Some(c) if c.enabled => c
-                .channel_id
-                .map(|id| format!("Enabled in <#{id}>"))
-                .unwrap_or_else(|| "Enabled (no channel set)".to_string()),
-            Some(_) => "Disabled".to_string(),
-            None => "Not configured".to_string(),
-        };
+// ---- helpers ---------------------------------------------------------------
 
-        let logging_str = match self.state.logging_cache.get(&guild_id) {
-            Some(c) if c.enabled => "Enabled".to_string(),
-            Some(_) => "Disabled".to_string(),
-            None => "Not configured".to_string(),
-        };
+/// Structural validation of an IANA-style timezone string.
+///
+/// A full IANA database check would require the `chrono-tz` crate (not a
+/// dependency, and Cargo.toml is out of scope for this task), so this does a
+/// format check: accepts the common single-word zones plus `Area/Location`
+/// forms with sane characters. Rejects obvious garbage and whitespace.
+fn is_valid_timezone(tz: &str) -> bool {
+    let tz = tz.trim();
+    if tz.is_empty() || tz.len() > 64 {
+        return false;
+    }
+    if !tz
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
+    {
+        return false;
+    }
+    let upper = tz.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "UTC" | "GMT" | "LOCAL" | "ZULU" | "UNIVERSAL"
+    ) {
+        return true;
+    }
+    // Otherwise require an Area/Location form: at least two non-empty
+    // segments, each beginning with a letter (e.g. America/New_York).
+    let segs: Vec<&str> = tz.split('/').collect();
+    segs.len() >= 2
+        && segs
+            .iter()
+            .all(|s| s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+}
 
-        let sentinel_str = match self.state.sentinel_cache.get(&guild_id) {
-            Some(c) if c.enabled => "Enabled".to_string(),
-            Some(_) => "Disabled".to_string(),
-            None => "Not configured".to_string(),
-        };
+// ---- settings commands -----------------------------------------------------
 
-        // --- User settings (settings_users) ---
-        let user_id = msg.author.id.get() as i64;
-        let user_row = settings_users::Entity::find_by_id(user_id)
-            .one(self.state.users_orm())
-            .await
-            .ok()
-            .flatten();
+/// Server and user settings.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Settings",
+    subcommand_required,
+    subcommands("settings_show", "settings_reset", "settings_timezone")
+)]
+async fn settings(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
 
-        let (timezone, patron_level, is_blacklisted) = match user_row {
-            Some(m) => (m.timezone, m.patron_level, m.is_blacklisted),
-            None => (None, 0, false),
-        };
-        let timezone_str = timezone.unwrap_or_else(|| "Not set".to_string());
+/// Show the current server and your personal settings.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Settings",
+    rename = "show",
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn settings_show(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+    let author = ctx.author();
 
-        let embed = CreateEmbed::new()
-            .title("Settings")
-            .color(colors::BLURPLE)
-            .timestamp(Timestamp::now())
-            .field("Prefixes", prefix_str, false)
-            .field("Welcome", welcome_str, true)
-            .field("Logging", logging_str, true)
-            .field("Sentinel", sentinel_str, true)
-            .field(
-                format!("{}'s Timezone", msg.author.name),
-                timezone_str,
-                false,
-            )
-            .field("Patron Level", patron_level.to_string(), true)
-            .field(
-                "Blacklisted",
-                if is_blacklisted { "Yes" } else { "No" }.to_string(),
-                true,
-            );
+    let prefixes = state.custom_prefixes(guild_id).await;
+    let prefix_str = if prefixes.is_empty() {
+        format!("`{}`", state.prefix())
+    } else {
+        prefixes
+            .iter()
+            .map(|p| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
-        let _ = msg
+    let welcome_str = match state.welcome_cache.get(&guild_id) {
+        Some(c) if c.enabled => c
             .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-    }
+            .map(|id| format!("Enabled in <#{id}>"))
+            .unwrap_or_else(|| "Enabled (no channel set)".to_string()),
+        Some(_) => "Disabled".to_string(),
+        None => "Not configured".to_string(),
+    };
 
-    /// Send a confirmation prompt; the destructive work happens in
-    /// `on_component` -> `do_reset` once the invoker clicks Confirm.
-    async fn cmd_reset(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        let author_id = msg.author.id.get();
-        let confirm = CreateButton::new(format!("set:reset:confirm:{guild_id}:{author_id}"))
-            .label("Confirm")
-            .style(ButtonStyle::Danger)
-            .emoji('✅');
-        let cancel = CreateButton::new(format!("set:reset:cancel:{guild_id}:{author_id}"))
-            .label("Cancel")
-            .style(ButtonStyle::Secondary)
-            .emoji('❌');
+    let logging_str = match state.logging_cache.get(&guild_id) {
+        Some(c) if c.enabled => "Enabled".to_string(),
+        Some(_) => "Disabled".to_string(),
+        None => "Not configured".to_string(),
+    };
 
-        let embed = CreateEmbed::new()
-            .title("Reset Server Settings?")
-            .description(
-                "This will reset all server settings (prefixes, welcome, goodbye, logging, \
-                 sentinel) to their defaults. This cannot be undone.",
-            )
-            .color(colors::YELLOW)
-            .timestamp(Timestamp::now());
+    let sentinel_str = match state.sentinel_cache.get(&guild_id) {
+        Some(c) if c.enabled => "Enabled".to_string(),
+        Some(_) => "Disabled".to_string(),
+        None => "Not configured".to_string(),
+    };
 
-        let builder = CreateMessage::new()
-            .embed(embed)
-            .components(vec![CreateActionRow::Buttons(vec![confirm, cancel])]);
-        let _ = msg.channel_id.send_message(&ctx.http, builder).await;
-    }
+    let user_id = author.id.get() as i64;
+    let user_row = settings_users::Entity::find_by_id(user_id)
+        .one(state.users_orm())
+        .await
+        .ok()
+        .flatten();
 
-    /// Delete every per-guild settings row and drop the cached copies.
-    async fn do_reset(&self, guild_id: u64) {
-        let gid = guild_id as i64;
-        let _ = prefixes::Entity::delete_many()
-            .filter(prefixes::Column::GuildId.eq(gid))
-            .exec(self.state.servers_orm())
-            .await;
-        let _ = welcome_config::Entity::delete_many()
-            .filter(welcome_config::Column::GuildId.eq(gid))
-            .exec(self.state.servers_orm())
-            .await;
-        let _ = goodbye_config::Entity::delete_many()
-            .filter(goodbye_config::Column::GuildId.eq(gid))
-            .exec(self.state.servers_orm())
-            .await;
-        let _ = logging::Entity::delete_many()
-            .filter(logging::Column::GuildId.eq(gid))
-            .exec(self.state.servers_orm())
-            .await;
-        let _ = sentinel_config::Entity::delete_many()
-            .filter(sentinel_config::Column::GuildId.eq(gid))
-            .exec(self.state.servers_orm())
-            .await;
+    let (timezone, patron_level, is_blacklisted) = match user_row {
+        Some(m) => (m.timezone, m.patron_level, m.is_blacklisted),
+        None => (None, 0, false),
+    };
+    let timezone_str = timezone.unwrap_or_else(|| "Not set".to_string());
 
-        self.state.prefix_cache.remove(&guild_id);
-        self.state.welcome_cache.remove(&guild_id);
-        self.state.goodbye_cache.remove(&guild_id);
-        self.state.logging_cache.remove(&guild_id);
-        self.state.sentinel_cache.remove(&guild_id);
-    }
+    let embed = CreateEmbed::new()
+        .title("Settings")
+        .color(colors::BLURPLE)
+        .timestamp(Timestamp::now())
+        .field("Prefixes", prefix_str, false)
+        .field("Welcome", welcome_str, true)
+        .field("Logging", logging_str, true)
+        .field("Sentinel", sentinel_str, true)
+        .field(format!("{}'s Timezone", author.name), timezone_str, false)
+        .field("Patron Level", patron_level.to_string(), true)
+        .field(
+            "Blacklisted",
+            if is_blacklisted { "Yes" } else { "No" }.to_string(),
+            true,
+        );
 
-    async fn cmd_timezone(&self, ctx: &Context, msg: &Message, arg: &str) {
-        if arg.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    "Usage: `settings timezone <IANA tz>` (e.g. `America/New_York`)",
-                )
-                .await;
-            return;
-        }
+    send_embed(ctx, embed).await
+}
 
-        if !Self::is_valid_timezone(arg) {
-            let _ = msg
-                .channel_id
-                .send_message(
-                    &ctx.http,
-                    CreateMessage::new().embed(embeds::error_embed(&format!(
-                        "`{arg}` is not a valid timezone. Use an IANA name like `America/New_York` or `UTC`."
-                    ))),
-                )
-                .await;
-            return;
-        }
+/// Reset all server settings to defaults (requires confirmation).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Settings",
+    rename = "reset",
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn settings_reset(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let author_id = ctx.author().id.get();
 
-        let user_id = msg.author.id.get() as i64;
-        let result = settings_users::Entity::insert(settings_users::ActiveModel {
-            user_id: Set(user_id),
-            timezone: Set(Some(arg.to_string())),
-            ..Default::default()
-        })
-        .on_conflict(
-            OnConflict::column(settings_users::Column::UserId)
-                .update_columns([settings_users::Column::Timezone])
-                .to_owned(),
+    let confirm = CreateButton::new(format!("set:reset:confirm:{guild_id}:{author_id}"))
+        .label("Confirm")
+        .style(ButtonStyle::Danger)
+        .emoji('✅');
+    let cancel = CreateButton::new(format!("set:reset:cancel:{guild_id}:{author_id}"))
+        .label("Cancel")
+        .style(ButtonStyle::Secondary)
+        .emoji('❌');
+
+    let embed = CreateEmbed::new()
+        .title("Reset Server Settings?")
+        .description(
+            "This will reset all server settings (prefixes, welcome, goodbye, logging, \
+             sentinel) to their defaults. This cannot be undone.",
         )
-        .exec(self.state.users_orm())
+        .color(colors::YELLOW)
+        .timestamp(Timestamp::now());
+
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(embed)
+            .components(vec![CreateActionRow::Buttons(vec![confirm, cancel])]),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Set your personal timezone (IANA name, e.g. America/New_York).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Settings",
+    rename = "timezone",
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn settings_timezone(
+    ctx: Context<'_>,
+    #[description = "IANA timezone"] timezone: String,
+) -> Result<(), Error> {
+    if !is_valid_timezone(&timezone) {
+        return send_error(
+            ctx,
+            &format!(
+                "`{timezone}` is not a valid timezone. Use an IANA name like `America/New_York` or `UTC`."
+            ),
+        )
         .await;
-
-        match result {
-            Ok(_) => {
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embeds::success_embed(
-                            "Timezone Set",
-                            &format!("Your timezone is now set to `{arg}`."),
-                        )),
-                    )
-                    .await;
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to set timezone");
-                let _ = msg.channel_id.say(&ctx.http, "Database error.").await;
-            }
-        }
     }
 
-    async fn cmd_blacklist(&self, ctx: &Context, msg: &Message, subcmd: &str, arg: &str) {
-        // The blacklist is a global (cross-guild) gate on bot usage, so only the
-        // bot owner may edit it — never a regular member (who could otherwise
-        // un-blacklist themselves or blacklist others).
-        if !self.state.is_owner(msg.author.id.get()) {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "This command is owner-only.")
-                .await;
-            return;
-        }
-        let user_id = match parse::parse_user_id(arg) {
-            Some(id) => id as i64,
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        "Usage: `blacklist add <@user>` | `blacklist remove <@user>`",
-                    )
-                    .await;
-                return;
-            }
-        };
+    let state = &ctx.data().state;
+    let user_id = ctx.author().id.get() as i64;
 
-        match subcmd {
-            "add" => {
-                let _ = settings_users::Entity::insert(settings_users::ActiveModel {
-                    user_id: Set(user_id),
-                    is_blacklisted: Set(true),
-                    ..Default::default()
-                })
-                .on_conflict(
-                    OnConflict::column(settings_users::Column::UserId)
-                        .update_columns([settings_users::Column::IsBlacklisted])
-                        .to_owned(),
-                )
-                .exec(self.state.users_orm())
-                .await;
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("<@{user_id}> added to blacklist."))
-                    .await;
-            }
-            "remove" => {
-                let _ = settings_users::Entity::update_many()
-                    .col_expr(settings_users::Column::IsBlacklisted, Expr::value(false))
-                    .filter(settings_users::Column::UserId.eq(user_id))
-                    .exec(self.state.users_orm())
-                    .await;
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("<@{user_id}> removed from blacklist."))
-                    .await;
-            }
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        "Usage: `blacklist add <@user>` | `blacklist remove <@user>`",
-                    )
-                    .await;
-            }
+    let result = settings_users::Entity::insert(settings_users::ActiveModel {
+        user_id: Set(user_id),
+        timezone: Set(Some(timezone.clone())),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::column(settings_users::Column::UserId)
+            .update_columns([settings_users::Column::Timezone])
+            .to_owned(),
+    )
+    .exec(state.users_orm())
+    .await;
+
+    match result {
+        Ok(_) => {
+            send_embed(
+                ctx,
+                embeds::success_embed(
+                    "Timezone Set",
+                    &format!("Your timezone is now set to `{timezone}`."),
+                ),
+            )
+            .await
+        }
+        Err(e) => {
+            tracing::error!(error = ?e, "failed to set timezone");
+            send_error(ctx, "Database error.").await
         }
     }
+}
+
+// ---- blacklist commands ----------------------------------------------------
+
+/// Bot owner blacklist management.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Settings",
+    subcommand_required,
+    subcommands("blacklist_add", "blacklist_remove")
+)]
+async fn blacklist(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Add a user to the bot blacklist (owner-only).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Settings",
+    rename = "add",
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn blacklist_add(
+    ctx: Context<'_>,
+    user: serenity::all::User,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    if !state.is_owner(ctx.author().id.get()) {
+        return send_error(ctx, "This command is owner-only.").await;
+    }
+    let user_id = user.id.get() as i64;
+    let _ = settings_users::Entity::insert(settings_users::ActiveModel {
+        user_id: Set(user_id),
+        is_blacklisted: Set(true),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::column(settings_users::Column::UserId)
+            .update_columns([settings_users::Column::IsBlacklisted])
+            .to_owned(),
+    )
+    .exec(state.users_orm())
+    .await;
+    ctx.say(format!("<@{user_id}> added to blacklist.")).await?;
+    Ok(())
+}
+
+/// Remove a user from the bot blacklist (owner-only).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Settings",
+    rename = "remove",
+    required_permissions = "MANAGE_GUILD"
+)]
+async fn blacklist_remove(
+    ctx: Context<'_>,
+    user: serenity::all::User,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    if !state.is_owner(ctx.author().id.get()) {
+        return send_error(ctx, "This command is owner-only.").await;
+    }
+    let user_id = user.id.get() as i64;
+    let _ = settings_users::Entity::update_many()
+        .col_expr(settings_users::Column::IsBlacklisted, Expr::value(false))
+        .filter(settings_users::Column::UserId.eq(user_id))
+        .exec(state.users_orm())
+        .await;
+    ctx.say(format!("<@{user_id}> removed from blacklist.")).await?;
+    Ok(())
 }

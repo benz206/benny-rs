@@ -1,9 +1,8 @@
 use super::Cog;
-use crate::state::{AppState, CommandInvocation};
+use crate::framework::{Context, Data, Error, send_error};
+use crate::state::AppState;
 use async_trait::async_trait;
-use serenity::all::{
-    Attachment, Context, CreateAllowedMentions, CreateMessage, GetMessages, Message,
-};
+use serenity::all::{Attachment, CreateAllowedMentions};
 use std::sync::Arc;
 
 pub struct OcrCog {
@@ -14,204 +13,160 @@ impl OcrCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
         Arc::new(Self { state })
     }
-
-    /// Whether an attachment is an image (by content-type or filename extension).
-    fn is_image(att: &Attachment) -> bool {
-        if let Some(ct) = &att.content_type {
-            if ct.starts_with("image/") {
-                return true;
-            }
-        }
-        let name = att.filename.to_lowercase();
-        [
-            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
-        ]
-        .iter()
-        .any(|ext| name.ends_with(ext))
-    }
-
-    /// Upload text to mystb.in, returning the paste link on success.
-    ///
-    /// `POST https://mystb.in/api/paste` with `{"files": [{"content", "filename"}]}`,
-    /// responding with `{"id": ...}` → `https://mystb.in/{id}`.
-    async fn upload_to_mystbin(&self, text: &str) -> Option<String> {
-        let body = serde_json::json!({
-            "files": [{
-                "content": text,
-                "filename": "imgread.txt",
-            }]
-        });
-        let resp = self
-            .state
-            .http
-            .post("https://mystb.in/api/paste")
-            .json(&body)
-            .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let json: serde_json::Value = resp.json().await.ok()?;
-        let id = json.get("id").and_then(|v| v.as_str())?;
-        Some(format!("https://mystb.in/{id}"))
-    }
 }
 
 #[async_trait]
-impl Cog for OcrCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        match inv.command {
-            "ocr" | "imgread" | "read" => {}
-            _ => return false,
+impl Cog for OcrCog {}
+
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![ocr()]
+}
+
+/// Read text from an image using OCR.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "OCR",
+    aliases("imgread", "read")
+)]
+async fn ocr(
+    ctx: Context<'_>,
+    #[description = "Image attachment"] attachment: Option<Attachment>,
+    #[description = "Image URL"]
+    #[rest]
+    image_url: Option<String>,
+) -> Result<(), Error> {
+    let image_url = if let Some(att) = attachment {
+        att.url.clone()
+    } else if let Some(url) = image_url {
+        url
+    } else if let poise::Context::Prefix(p) = ctx {
+        match p.msg.attachments.first() {
+            Some(att) => att.url.clone(),
+            None => return send_error(ctx, "Please provide an image or url to read.").await,
         }
-        if msg.guild_id.is_none() {
-            return false;
+    } else {
+        return send_error(ctx, "Please provide an image or url to read.").await;
+    };
+
+    let sctx = ctx.serenity_context();
+    let state = &ctx.data().state;
+
+    let _ = ctx.channel_id().broadcast_typing(&sctx.http).await;
+
+    // Run OCR via the ocr.space free API (demo "helloworld" key).
+    let form_data = [
+        ("url", image_url.as_str()),
+        ("apikey", "helloworld"),
+        ("language", "eng"),
+        ("isOverlayRequired", "false"),
+    ];
+
+    let resp = match state
+        .http
+        .post("https://api.ocr.space/parse/image")
+        .form(&form_data)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!(error = ?e, "OCR request failed");
+            ctx.say("OCR service unavailable.").await?;
+            return Ok(());
         }
-        let arg = inv.args;
+    };
 
-        // Resolve the image URL: explicit arg, then the current message's
-        // attachments, then the most recent image attachment in channel history.
-        let image_url = if !arg.is_empty() {
-            arg.to_string()
-        } else if let Some(att) = msg.attachments.iter().find(|a| Self::is_image(a)) {
-            att.url.clone()
-        } else {
-            let recent = msg
-                .channel_id
-                .messages(&ctx.http, GetMessages::new().before(msg.id).limit(50))
-                .await
-                .ok()
-                .and_then(|msgs| {
-                    msgs.iter()
-                        .find_map(|m| m.attachments.iter().find(|a| Self::is_image(a)))
-                        .map(|a| a.url.clone())
-                });
-            match recent {
-                Some(url) => url,
-                None => {
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "Please provide an image or url to read.")
-                        .await;
-                    return true;
-                }
-            }
-        };
-
-        let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
-
-        // Run OCR via the ocr.space free API (demo "helloworld" key).
-        let form_data = [
-            ("url", image_url.as_str()),
-            ("apikey", "helloworld"),
-            ("language", "eng"),
-            ("isOverlayRequired", "false"),
-        ];
-
-        let resp = match self
-            .state
-            .http
-            .post("https://api.ocr.space/parse/image")
-            .form(&form_data)
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
-                tracing::error!(error = ?e, "OCR request failed");
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "OCR service unavailable.")
-                    .await;
-                return true;
-            }
-        };
-
-        let json = match resp.json::<serde_json::Value>().await {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to parse OCR response");
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Failed to parse OCR response.")
-                    .await;
-                return true;
-            }
-        };
-
-        if json
-            .get("IsErroredOnProcessing")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            tracing::error!(response = ?json, "OCR processing error");
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "OCR failed to process the image.")
-                .await;
-            return true;
+    let json = match resp.json::<serde_json::Value>().await {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(error = ?e, "failed to parse OCR response");
+            ctx.say("Failed to parse OCR response.").await?;
+            return Ok(());
         }
+    };
 
-        let text = json
-            .get("ParsedResults")
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|r| r.get("ParsedText"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+    if json
+        .get("IsErroredOnProcessing")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        tracing::error!(response = ?json, "OCR processing error");
+        ctx.say("OCR failed to process the image.").await?;
+        return Ok(());
+    }
 
-        if text.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "No text detected in image.")
-                .await;
-        } else if text.len() > 1900 {
-            // Too long for a single Discord message: upload to mystb.in.
-            match self.upload_to_mystbin(&text).await {
-                Some(link) => {
-                    let _ = msg
-                        .channel_id
-                        .say(
-                            &ctx.http,
-                            format!(
-                                "The text was {} characters, so it was uploaded: {link}",
-                                text.len()
-                            ),
-                        )
-                        .await;
-                }
-                None => {
-                    // Degrade gracefully: truncate to fit in a message.
-                    let truncated = crate::utils::format::truncate(&text, 1900);
-                    let _ = msg
-                        .channel_id
-                        .send_message(
-                            &ctx.http,
-                            CreateMessage::new()
-                                .content(format!(
-                                    "```\n{truncated}\n```\n*(truncated — paste upload failed)*"
-                                ))
-                                .allowed_mentions(CreateAllowedMentions::new()),
-                        )
-                        .await;
-                }
+    let text = json
+        .get("ParsedResults")
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .and_then(|r| r.get("ParsedText"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if text.is_empty() {
+        ctx.say("No text detected in image.").await?;
+    } else if text.len() > 1900 {
+        // Too long for a single Discord message: upload to mystb.in.
+        match upload_to_mystbin(state, &text).await {
+            Some(link) => {
+                ctx.say(format!(
+                    "The text was {} characters, so it was uploaded: {link}",
+                    text.len()
+                ))
+                .await?;
             }
-        } else {
-            // OCR'd text is attacker-controlled (an image can contain a
-            // code-block breakout + @everyone), so suppress all pings.
-            let _ = msg
-                .channel_id
-                .send_message(
-                    &ctx.http,
-                    CreateMessage::new()
-                        .content(format!("```\n{text}\n```"))
+            None => {
+                // Degrade gracefully: truncate to fit in a message.
+                let truncated = crate::utils::format::truncate(&text, 1900);
+                ctx.send(
+                    poise::CreateReply::default()
+                        .content(format!(
+                            "```\n{truncated}\n```\n*(truncated — paste upload failed)*"
+                        ))
                         .allowed_mentions(CreateAllowedMentions::new()),
                 )
-                .await;
+                .await?;
+            }
         }
-        true
+    } else {
+        // OCR'd text is attacker-controlled (an image can contain a
+        // code-block breakout + @everyone), so suppress all pings.
+        ctx.send(
+            poise::CreateReply::default()
+                .content(format!("```\n{text}\n```"))
+                .allowed_mentions(CreateAllowedMentions::new()),
+        )
+        .await?;
     }
+
+    Ok(())
+}
+
+/// Upload text to mystb.in, returning the paste link on success.
+///
+/// `POST https://mystb.in/api/paste` with `{"files": [{"content", "filename"}]}`,
+/// responding with `{"id": ...}` → `https://mystb.in/{id}`.
+async fn upload_to_mystbin(state: &AppState, text: &str) -> Option<String> {
+    let body = serde_json::json!({
+        "files": [{
+            "content": text,
+            "filename": "imgread.txt",
+        }]
+    });
+    let resp = state
+        .http
+        .post("https://mystb.in/api/paste")
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let id = json.get("id").and_then(|v| v.as_str())?;
+    Some(format!("https://mystb.in/{id}"))
 }

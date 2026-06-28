@@ -1,12 +1,12 @@
 use super::Cog;
-use crate::state::{AppState, CommandInvocation};
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::AppState;
 use crate::utils::colors;
-use crate::utils::embeds::error_embed;
 use async_trait::async_trait;
 use serenity::all::{
-    ButtonStyle, ComponentInteraction, Context, CreateActionRow, CreateButton, CreateEmbed,
-    CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
-    GuildId, Message, Timestamp,
+    ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
+    CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage, GuildId,
+    Timestamp,
 };
 use std::sync::Arc;
 use sysinfo::{Disks, Networks, System};
@@ -37,61 +37,7 @@ impl DevCog {
 
 #[async_trait]
 impl Cog for DevCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        // Owner-only enforcement on every dev command.
-        if !self.state.is_owner(msg.author.id.get()) {
-            return false;
-        }
-        if inv.command != "dev" {
-            return false;
-        }
-        let (subcmd, rest) = split_first(inv.args);
-
-        match subcmd {
-            "sysinfo" | "sys" | "system" => self.cmd_system(ctx, msg).await,
-            "gitpull" | "pull" => self.cmd_gitpull(ctx, msg).await,
-            "sync" => self.cmd_sync(ctx, msg).await,
-            "syncs" => {
-                self.reply_unsupported(
-                    ctx,
-                    msg,
-                    "Slash-command tree sync is not available at runtime; commands are registered globally at startup.",
-                )
-                .await
-            }
-            "clear" => {
-                self.reply_unsupported(
-                    ctx,
-                    msg,
-                    "Clearing the slash-command tree is not available at runtime in the Rust build.",
-                )
-                .await
-            }
-            "load" | "unload" | "reload" => {
-                self.reply_unsupported(
-                    ctx,
-                    msg,
-                    "Cog load/unload/reload is not supported in the Rust build — cogs are compiled in statically. Use `dev gitpull` and restart the process.",
-                )
-                .await
-            }
-            "servers" | "guilds" => self.cmd_servers(ctx, msg).await,
-            "leave" => self.cmd_leave(ctx, msg, rest).await,
-            "close" | "end" | "stop" => self.cmd_close(ctx, msg).await,
-            "redis" => self.cmd_redis(ctx, msg, rest).await,
-            "logs" | "blogs" => self.cmd_logs(ctx, msg, rest).await,
-            "uptime" => self.cmd_uptime(ctx, msg).await,
-            "ping" => self.cmd_ping(ctx, msg).await,
-            "eval" | "exec" => {
-                self.reply_unsupported(ctx, msg, "The `eval` command is disabled in the Rust build.")
-                    .await
-            }
-            _ => self.cmd_help(ctx, msg).await,
-        }
-        true
-    }
-
-    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+    async fn on_component(&self, ctx: &serenity::all::Context, interaction: &ComponentInteraction) {
         let id = interaction.data.custom_id.as_str();
         // Early-return on ids this cog does not own.
         if !id.starts_with("dev:") {
@@ -131,398 +77,450 @@ impl Cog for DevCog {
     }
 }
 
-impl DevCog {
-    // ---- shared helpers ---------------------------------------------------
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![dev()]
+}
 
-    async fn reply_embed(&self, ctx: &Context, msg: &Message, embed: CreateEmbed) {
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
+// ---- commands ---------------------------------------------------------------
+
+/// Developer command group.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    category = "Dev",
+    subcommands(
+        "dev_system",
+        "dev_gitpull",
+        "dev_servers",
+        "dev_leave",
+        "dev_close",
+        "dev_redis",
+        "dev_logs",
+        "dev_uptime",
+        "dev_ping"
+    )
+)]
+async fn dev(ctx: Context<'_>) -> Result<(), Error> {
+    let embed = CreateEmbed::new()
+        .title("Developer Commands")
+        .description(
+            "**System:** `dev system` / `dev sys`\n\
+             **Git:** `dev gitpull` / `dev pull`\n\
+             **Servers:** `dev servers`, `dev leave <guild_id>`\n\
+             **Redis:** `dev redis <get|set|search|info|cinfo|showall>`\n\
+             **Logs:** `dev logs [n]`\n\
+             **Process:** `dev uptime`, `dev ping`, `dev close`\n\
+             **Disabled in Rust build:** `dev eval`, `dev load`/`unload`/`reload`",
+        )
+        .color(colors::BLACK)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Show a system overview embed with Info / CPU / RAM controls.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "system",
+    aliases("sys")
+)]
+async fn dev_system(ctx: Context<'_>) -> Result<(), Error> {
+    let embed = base_system_embed().await;
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(embed)
+            .components(vec![system_view()]),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Run `git pull` and report the output.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "gitpull",
+    aliases("pull")
+)]
+async fn dev_gitpull(ctx: Context<'_>) -> Result<(), Error> {
+    let raw = run_git_pull();
+    send_embed(ctx, git_embed(&raw)).await
+}
+
+/// List every guild the bot is in.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "servers",
+    aliases("guilds")
+)]
+async fn dev_servers(ctx: Context<'_>) -> Result<(), Error> {
+    let sctx = ctx.serenity_context();
+    let guild_ids = sctx.cache.guilds();
+    let bot_name = sctx.cache.current_user().name.clone();
+    let count = guild_ids.len();
+
+    let mut lines = String::new();
+    for gid in &guild_ids {
+        if let Some(g) = sctx.cache.guild(*gid) {
+            lines.push_str(&format!(
+                "\n{} ({}) \u{2014} {} members",
+                g.name,
+                gid.get(),
+                g.member_count
+            ));
+        } else {
+            lines.push_str(&format!("\n{} (uncached)", gid.get()));
+        }
+        if lines.len() > OUTPUT_LIMIT {
+            lines.push_str("\n...");
+            break;
+        }
+    }
+    if lines.is_empty() {
+        lines.push_str("\n(no servers)");
     }
 
-    async fn reply_error(&self, ctx: &Context, msg: &Message, text: &str) {
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(error_embed(text)))
-            .await;
+    let embed = CreateEmbed::new()
+        .title(format!("{bot_name} Server List \u{2014} {count}"))
+        .description(format!("```\n{lines}\n```"))
+        .color(colors::CYAN)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Make the bot leave a guild by ID.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "leave"
+)]
+async fn dev_leave(
+    ctx: Context<'_>,
+    #[description = "Guild ID to leave"]
+    #[rest]
+    guild_id: String,
+) -> Result<(), Error> {
+    let sctx = ctx.serenity_context();
+    let Ok(id) = guild_id.trim().parse::<u64>() else {
+        return send_error(ctx, "Usage: `dev leave <guild_id>`").await;
+    };
+    let gid = GuildId::new(id);
+    // Resolve the name from cache before leaving (guard dropped before await).
+    let name = sctx.cache.guild(gid).map(|g| g.name.clone());
+
+    match gid.leave(&sctx.http).await {
+        Ok(_) => {
+            let title = match &name {
+                Some(n) => format!("Left {n}"),
+                None => format!("Left guild {id}"),
+            };
+            let embed = CreateEmbed::new()
+                .title(title)
+                .description(format!("Guild ID: `{id}`"))
+                .color(colors::ORANGE)
+                .timestamp(Timestamp::now());
+            send_embed(ctx, embed).await
+        }
+        Err(e) => send_error(ctx, &format!("Failed to leave guild: {e}")).await,
     }
+}
 
-    /// Yellow "Not Supported" notice used for the Rust-build-only stubs
-    /// (eval/load/unload/reload/syncs/clear) and the unconfigured-logging path.
-    async fn reply_unsupported(&self, ctx: &Context, msg: &Message, text: &str) {
-        let embed = CreateEmbed::new()
-            .title("Not Supported")
-            .description(text)
-            .color(colors::YELLOW)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
+/// Stop the bot process immediately.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "close",
+    aliases("end", "stop")
+)]
+async fn dev_close(ctx: Context<'_>) -> Result<(), Error> {
+    let sctx = ctx.serenity_context();
+    if let poise::Context::Prefix(pctx) = ctx {
+        let _ = pctx.msg.react(&sctx.http, '\u{2705}').await;
     }
+    let embed = CreateEmbed::new()
+        .title("Shutting Down Bot")
+        .description("Shutting down the bot...")
+        .color(colors::RED)
+        .timestamp(Timestamp::now());
+    let _ = send_embed(ctx, embed).await;
+    tracing::warn!(
+        owner = ctx.author().id.get(),
+        "dev close invoked; exiting process"
+    );
+    std::process::exit(0);
+}
 
-    // ---- commands ---------------------------------------------------------
+/// Raw Redis access: `get`, `set`, `search`, `info`, `cinfo`, `showall`.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "redis"
+)]
+async fn dev_redis(
+    ctx: Context<'_>,
+    #[description = "Redis subcommand and arguments"]
+    #[rest]
+    args: Option<String>,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let Some(redis) = &state.redis else {
+        return send_error(ctx, "Redis is not connected in this build.").await;
+    };
+    let args_str = args.as_deref().unwrap_or("");
+    let (action, args) = split_first(args_str);
+    let action = action.to_lowercase();
 
-    /// `dev system` / `dev sysinfo` (also `sys`): a system overview embed with a
-    /// SystemView button bar to page through Info / CPU / RAM.
-    async fn cmd_system(&self, ctx: &Context, msg: &Message) {
-        let embed = base_system_embed().await;
-        let _ = msg
-            .channel_id
-            .send_message(
-                &ctx.http,
-                CreateMessage::new()
-                    .embed(embed)
-                    .components(vec![system_view()]),
-            )
-            .await;
-    }
-
-    /// `dev gitpull` / `dev pull`: run `git pull` and report the output.
-    async fn cmd_gitpull(&self, ctx: &Context, msg: &Message) {
-        let raw = run_git_pull();
-        self.reply_embed(ctx, msg, git_embed(&raw)).await;
-    }
-
-    /// `dev sync`: Rust cogs are static, so we pull and explain that reload requires a restart.
-    async fn cmd_sync(&self, ctx: &Context, msg: &Message) {
-        let raw = run_git_pull();
-        self.reply_embed(ctx, msg, git_embed(&raw)).await;
-        let note = CreateEmbed::new()
-            .title("Sync")
-            .description(
-                "Pulled the latest from git. Cog hot-reload (load/unload/reload) is not supported \
-                 in the Rust build — restart the process to apply changes.",
-            )
-            .color(colors::YELLOW)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, note).await;
-    }
-
-    /// `dev servers` (also `guilds`): list every guild the bot is in.
-    async fn cmd_servers(&self, ctx: &Context, msg: &Message) {
-        let guild_ids = ctx.cache.guilds();
-        let bot_name = ctx.cache.current_user().name.clone();
-        let count = guild_ids.len();
-
-        let mut lines = String::new();
-        for gid in &guild_ids {
-            // Guild guard is dropped at the end of each iteration (no await held).
-            if let Some(g) = ctx.cache.guild(*gid) {
-                lines.push_str(&format!(
-                    "\n{} ({}) \u{2014} {} members",
-                    g.name,
-                    gid.get(),
-                    g.member_count
-                ));
+    let mut conn = redis.lock().await;
+    // Build an embed (or an error string) while holding the connection; the
+    // guard is dropped before we reply so we never await a send under it.
+    let result: Result<CreateEmbed, String> = match action.as_str() {
+        "get" | "show" => {
+            let key = args.trim();
+            if key.is_empty() {
+                Err("Usage: `dev redis get <key>`".to_string())
             } else {
-                lines.push_str(&format!("\n{} (uncached)", gid.get()));
-            }
-            if lines.len() > OUTPUT_LIMIT {
-                lines.push_str("\n...");
-                break;
-            }
-        }
-        if lines.is_empty() {
-            lines.push_str("\n(no servers)");
-        }
-
-        let embed = CreateEmbed::new()
-            .title(format!("{bot_name} Server List \u{2014} {count}"))
-            .description(format!("```\n{lines}\n```"))
-            .color(colors::CYAN)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    /// `dev leave <guild_id>`: make the bot leave a guild.
-    async fn cmd_leave(&self, ctx: &Context, msg: &Message, rest: &str) {
-        let Ok(id) = rest.trim().parse::<u64>() else {
-            self.reply_error(ctx, msg, "Usage: `dev leave <guild_id>`")
-                .await;
-            return;
-        };
-        let gid = GuildId::new(id);
-        // Resolve the name from cache before leaving (guard dropped before await).
-        let name = ctx.cache.guild(gid).map(|g| g.name.clone());
-
-        match gid.leave(&ctx.http).await {
-            Ok(_) => {
-                let title = match &name {
-                    Some(n) => format!("Left {n}"),
-                    None => format!("Left guild {id}"),
-                };
-                let embed = CreateEmbed::new()
-                    .title(title)
-                    .description(format!("Guild ID: `{id}`"))
-                    .color(colors::ORANGE)
-                    .timestamp(Timestamp::now());
-                self.reply_embed(ctx, msg, embed).await;
-            }
-            Err(e) => {
-                self.reply_error(ctx, msg, &format!("Failed to leave guild: {e}"))
-                    .await;
-            }
-        }
-    }
-
-    /// `dev close` (also `end` / `stop`): stop the bot immediately. The serenity
-    /// client has no graceful shutdown handle here, so we exit the process.
-    async fn cmd_close(&self, ctx: &Context, msg: &Message) {
-        let _ = msg.react(&ctx.http, '\u{2705}').await;
-        let embed = CreateEmbed::new()
-            .title("Shutting Down Bot")
-            .description("Shutting down the bot...")
-            .color(colors::RED)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-        tracing::warn!(
-            owner = msg.author.id.get(),
-            "dev close invoked; exiting process"
-        );
-        std::process::exit(0);
-    }
-
-    /// `dev redis <get|set|search|info|cinfo|showall>`: raw Redis access.
-    /// Degrades gracefully when Redis is not connected.
-    async fn cmd_redis(&self, ctx: &Context, msg: &Message, rest: &str) {
-        let Some(redis) = &self.state.redis else {
-            self.reply_error(ctx, msg, "Redis is not connected in this build.")
-                .await;
-            return;
-        };
-        let (action, args) = split_first(rest);
-        let action = action.to_lowercase();
-
-        let mut conn = redis.lock().await;
-        // Build an embed (or an error string) while holding the connection; the
-        // guard is dropped before we reply so we never await a send under it.
-        let result: Result<CreateEmbed, String> = match action.as_str() {
-            "get" | "show" => {
-                let key = args.trim();
-                if key.is_empty() {
-                    Err("Usage: `dev redis get <key>`".to_string())
-                } else {
-                    match redis::cmd("GET")
-                        .arg(key)
-                        .query_async::<Option<String>>(&mut *conn)
-                        .await
-                    {
-                        Ok(Some(v)) => Ok(CreateEmbed::new()
-                            .title("Redis Key Data")
-                            .description(format!("```\n{}\n```", truncate_str(&v, 1900)))
-                            .color(colors::BLURPLE)
-                            .timestamp(Timestamp::now())),
-                        Ok(None) => Ok(CreateEmbed::new()
-                            .title(format!("Key {key} Not Found"))
-                            .color(colors::RED)
-                            .timestamp(Timestamp::now())),
-                        Err(e) => Err(format!("Redis error: {e}")),
-                    }
-                }
-            }
-            "set" | "add" | "+" => {
-                let (key, value) = split_first(args);
-                let value = value.trim();
-                if key.is_empty() || value.is_empty() {
-                    Err("Usage: `dev redis set <key> <value>`".to_string())
-                } else {
-                    match redis::cmd("SET")
-                        .arg(key)
-                        .arg(value)
-                        .exec_async(&mut *conn)
-                        .await
-                    {
-                        Ok(()) => Ok(CreateEmbed::new()
-                            .title("Added Key")
-                            .description(format!("```md\n[{key}]({value})\n```"))
-                            .color(colors::GREEN)
-                            .timestamp(Timestamp::now())),
-                        Err(e) => Err(format!("Redis error: {e}")),
-                    }
-                }
-            }
-            "search" => {
-                let p = args.trim();
-                let pattern = if p.is_empty() { "*" } else { p };
-                match redis::cmd("KEYS")
-                    .arg(pattern)
-                    .query_async::<Vec<String>>(&mut *conn)
+                match redis::cmd("GET")
+                    .arg(key)
+                    .query_async::<Option<String>>(&mut *conn)
                     .await
                 {
-                    Ok(keys) => {
-                        let total = keys.len();
-                        let mut body = String::new();
-                        for (i, k) in keys.iter().enumerate() {
-                            body.push_str(&format!("\n{}. {k}", i + 1));
-                            if body.len() > OUTPUT_LIMIT {
-                                body.push_str("\n...");
-                                break;
-                            }
-                        }
-                        if body.is_empty() {
-                            body = format!("[{pattern}][None]");
-                        }
-                        Ok(CreateEmbed::new()
-                            .title(format!("Redis Keys in Database \u{2014} {total}"))
-                            .description(format!("```md\n{body}\n```"))
-                            .color(colors::BLURPLE)
-                            .timestamp(Timestamp::now()))
-                    }
-                    Err(e) => Err(format!("Redis error: {e}")),
-                }
-            }
-            "info" | "i" => {
-                let who: String = redis::cmd("ACL")
-                    .arg("WHOAMI")
-                    .query_async(&mut *conn)
-                    .await
-                    .unwrap_or_else(|_| "?".to_string());
-                let cname: String = redis::cmd("CLIENT")
-                    .arg("GETNAME")
-                    .query_async(&mut *conn)
-                    .await
-                    .unwrap_or_default();
-                let cid: i64 = redis::cmd("CLIENT")
-                    .arg("ID")
-                    .query_async(&mut *conn)
-                    .await
-                    .unwrap_or(-1);
-                let dbsize: i64 = redis::cmd("DBSIZE")
-                    .query_async(&mut *conn)
-                    .await
-                    .unwrap_or(-1);
-                let desc = format!(
-                    "```asciidoc\n= ACL Info =\n[ User: {who} ]\n\n= Connection Info =\n[ Name: {cname} ]\n[ ID: {cid} ]\n\n= Misc =\n[ Database Size (Keys): {dbsize} ]\n```"
-                );
-                Ok(CreateEmbed::new()
-                    .title("Redis Info")
-                    .description(desc)
-                    .color(colors::BLURPLE)
-                    .timestamp(Timestamp::now()))
-            }
-            "cinfo" | "complex" | "c" => {
-                match redis::cmd("INFO").query_async::<String>(&mut *conn).await {
-                    Ok(info) => Ok(CreateEmbed::new()
-                        .title("Redis Complex Info")
-                        .description(format!("```\n{}\n```", truncate_str(info.trim(), 3800)))
+                    Ok(Some(v)) => Ok(CreateEmbed::new()
+                        .title("Redis Key Data")
+                        .description(format!("```\n{}\n```", truncate_str(&v, 1900)))
                         .color(colors::BLURPLE)
+                        .timestamp(Timestamp::now())),
+                    Ok(None) => Ok(CreateEmbed::new()
+                        .title(format!("Key {key} Not Found"))
+                        .color(colors::RED)
                         .timestamp(Timestamp::now())),
                     Err(e) => Err(format!("Redis error: {e}")),
                 }
             }
-            "showall" | "sa" => {
-                match redis::cmd("SCAN")
-                    .arg(0)
-                    .query_async::<(String, Vec<String>)>(&mut *conn)
+        }
+        "set" | "add" | "+" => {
+            let (key, value) = split_first(args);
+            let value = value.trim();
+            if key.is_empty() || value.is_empty() {
+                Err("Usage: `dev redis set <key> <value>`".to_string())
+            } else {
+                match redis::cmd("SET")
+                    .arg(key)
+                    .arg(value)
+                    .exec_async(&mut *conn)
                     .await
                 {
-                    Ok((_cursor, keys)) => {
-                        let mut body = String::new();
-                        for k in &keys {
-                            let val: Option<String> = redis::cmd("GET")
-                                .arg(k)
-                                .query_async(&mut *conn)
-                                .await
-                                .unwrap_or(None);
-                            let val = val.unwrap_or_else(|| "<non-string>".to_string());
-                            body.push_str(&format!("\n{k}: {val}"));
-                            if body.len() > OUTPUT_LIMIT {
-                                body.push_str("\n...");
-                                break;
-                            }
-                        }
-                        if body.is_empty() {
-                            body.push_str("(no keys)");
-                        }
-                        Ok(CreateEmbed::new()
-                            .title("Redis \u{2014} All Keys")
-                            .description(format!("```yaml\n{}\n```", truncate_str(&body, 1900)))
-                            .color(colors::GREEN)
-                            .timestamp(Timestamp::now()))
-                    }
+                    Ok(()) => Ok(CreateEmbed::new()
+                        .title("Added Key")
+                        .description(format!("```md\n[{key}]({value})\n```"))
+                        .color(colors::GREEN)
+                        .timestamp(Timestamp::now())),
                     Err(e) => Err(format!("Redis error: {e}")),
                 }
             }
-            "" => Err("Usage: `dev redis <get|set|search|info|cinfo|showall> ...`".to_string()),
-            other => Err(format!("Unknown redis subcommand `{other}`.")),
-        };
-        drop(conn);
-
-        match result {
-            Ok(embed) => self.reply_embed(ctx, msg, embed).await,
-            Err(e) => self.reply_error(ctx, msg, &e).await,
         }
-    }
-
-    /// `dev logs [n]` (also `blogs`): show the last N lines of the log file.
-    /// The bot logs to stdout by default; this reads `logs/benny.log` if file
-    /// logging has been wired up.
-    async fn cmd_logs(&self, ctx: &Context, msg: &Message, rest: &str) {
-        let n: usize = rest.trim().parse().unwrap_or(10).clamp(1, 100);
-        match std::fs::read_to_string(LOG_FILE) {
-            Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let start = lines.len().saturating_sub(n);
-                let tail = lines[start..].join("\n");
-                let body = if tail.trim().is_empty() {
-                    "(log file is empty)".to_string()
-                } else {
-                    truncate_str(&tail, 1900)
-                };
-                let embed = CreateEmbed::new()
-                    .title(format!("Last {n} log line(s)"))
-                    .description(format!("```\n{body}\n```"))
-                    .color(colors::DARK_GRAY)
-                    .timestamp(Timestamp::now());
-                self.reply_embed(ctx, msg, embed).await;
-            }
-            Err(_) => {
-                self.reply_unsupported(
-                    ctx,
-                    msg,
-                    &format!(
-                        "File logging is not configured \u{2014} `{LOG_FILE}` does not exist. \
-                         The bot currently logs to stdout; wire `tracing-appender` in `main.rs` to enable file logs."
-                    ),
-                )
-                .await;
+        "search" => {
+            let p = args.trim();
+            let pattern = if p.is_empty() { "*" } else { p };
+            match redis::cmd("KEYS")
+                .arg(pattern)
+                .query_async::<Vec<String>>(&mut *conn)
+                .await
+            {
+                Ok(keys) => {
+                    let total = keys.len();
+                    let mut body = String::new();
+                    for (i, k) in keys.iter().enumerate() {
+                        body.push_str(&format!("\n{}. {k}", i + 1));
+                        if body.len() > OUTPUT_LIMIT {
+                            body.push_str("\n...");
+                            break;
+                        }
+                    }
+                    if body.is_empty() {
+                        body = format!("[{pattern}][None]");
+                    }
+                    Ok(CreateEmbed::new()
+                        .title(format!("Redis Keys in Database \u{2014} {total}"))
+                        .description(format!("```md\n{body}\n```"))
+                        .color(colors::BLURPLE)
+                        .timestamp(Timestamp::now()))
+                }
+                Err(e) => Err(format!("Redis error: {e}")),
             }
         }
-    }
+        "info" | "i" => {
+            let who: String = redis::cmd("ACL")
+                .arg("WHOAMI")
+                .query_async(&mut *conn)
+                .await
+                .unwrap_or_else(|_| "?".to_string());
+            let cname: String = redis::cmd("CLIENT")
+                .arg("GETNAME")
+                .query_async(&mut *conn)
+                .await
+                .unwrap_or_default();
+            let cid: i64 = redis::cmd("CLIENT")
+                .arg("ID")
+                .query_async(&mut *conn)
+                .await
+                .unwrap_or(-1);
+            let dbsize: i64 = redis::cmd("DBSIZE")
+                .query_async(&mut *conn)
+                .await
+                .unwrap_or(-1);
+            let desc = format!(
+                "```asciidoc\n= ACL Info =\n[ User: {who} ]\n\n= Connection Info =\n[ Name: {cname} ]\n[ ID: {cid} ]\n\n= Misc =\n[ Database Size (Keys): {dbsize} ]\n```"
+            );
+            Ok(CreateEmbed::new()
+                .title("Redis Info")
+                .description(desc)
+                .color(colors::BLURPLE)
+                .timestamp(Timestamp::now()))
+        }
+        "cinfo" | "complex" | "c" => {
+            match redis::cmd("INFO").query_async::<String>(&mut *conn).await {
+                Ok(info) => Ok(CreateEmbed::new()
+                    .title("Redis Complex Info")
+                    .description(format!("```\n{}\n```", truncate_str(info.trim(), 3800)))
+                    .color(colors::BLURPLE)
+                    .timestamp(Timestamp::now())),
+                Err(e) => Err(format!("Redis error: {e}")),
+            }
+        }
+        "showall" | "sa" => {
+            match redis::cmd("SCAN")
+                .arg(0)
+                .query_async::<(String, Vec<String>)>(&mut *conn)
+                .await
+            {
+                Ok((_cursor, keys)) => {
+                    let mut body = String::new();
+                    for k in &keys {
+                        let val: Option<String> = redis::cmd("GET")
+                            .arg(k)
+                            .query_async(&mut *conn)
+                            .await
+                            .unwrap_or(None);
+                        let val = val.unwrap_or_else(|| "<non-string>".to_string());
+                        body.push_str(&format!("\n{k}: {val}"));
+                        if body.len() > OUTPUT_LIMIT {
+                            body.push_str("\n...");
+                            break;
+                        }
+                    }
+                    if body.is_empty() {
+                        body.push_str("(no keys)");
+                    }
+                    Ok(CreateEmbed::new()
+                        .title("Redis \u{2014} All Keys")
+                        .description(format!("```yaml\n{}\n```", truncate_str(&body, 1900)))
+                        .color(colors::GREEN)
+                        .timestamp(Timestamp::now()))
+                }
+                Err(e) => Err(format!("Redis error: {e}")),
+            }
+        }
+        "" => Err("Usage: `dev redis <get|set|search|info|cinfo|showall> ...`".to_string()),
+        other => Err(format!("Unknown redis subcommand `{other}`.")),
+    };
+    drop(conn);
 
-    /// `dev uptime`: how long the process has been running.
-    async fn cmd_uptime(&self, ctx: &Context, msg: &Message) {
-        let secs = self.state.uptime_secs();
-        let h = secs / 3600;
-        let m = (secs % 3600) / 60;
-        let s = secs % 60;
-        let _ = msg
-            .channel_id
-            .say(&ctx.http, format!("Uptime: {h}h {m}m {s}s"))
-            .await;
+    match result {
+        Ok(embed) => send_embed(ctx, embed).await,
+        Err(e) => send_error(ctx, &e).await,
     }
+}
 
-    /// `dev ping`: trivial liveness check.
-    async fn cmd_ping(&self, ctx: &Context, msg: &Message) {
-        let _ = msg.channel_id.say(&ctx.http, "Pong (dev)!").await;
+/// Show the last N lines of the bot log file.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "logs"
+)]
+async fn dev_logs(
+    ctx: Context<'_>,
+    #[description = "Number of lines to show (default 10, max 100)"]
+    #[rest]
+    args: Option<String>,
+) -> Result<(), Error> {
+    let rest = args.as_deref().unwrap_or("");
+    let n: usize = rest.trim().parse().unwrap_or(10).clamp(1, 100);
+    match std::fs::read_to_string(LOG_FILE) {
+        Ok(content) => {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(n);
+            let tail = lines[start..].join("\n");
+            let body = if tail.trim().is_empty() {
+                "(log file is empty)".to_string()
+            } else {
+                truncate_str(&tail, 1900)
+            };
+            let embed = CreateEmbed::new()
+                .title(format!("Last {n} log line(s)"))
+                .description(format!("```\n{body}\n```"))
+                .color(colors::DARK_GRAY)
+                .timestamp(Timestamp::now());
+            send_embed(ctx, embed).await
+        }
+        Err(_) => {
+            let embed = CreateEmbed::new()
+                .title("Not Supported")
+                .description(format!(
+                    "File logging is not configured \u{2014} `{LOG_FILE}` does not exist. \
+                     The bot currently logs to stdout; wire `tracing-appender` in `main.rs` to enable file logs."
+                ))
+                .color(colors::YELLOW)
+                .timestamp(Timestamp::now());
+            send_embed(ctx, embed).await
+        }
     }
+}
 
-    /// Usage list for a bare `dev` (or an unknown subcommand).
-    async fn cmd_help(&self, ctx: &Context, msg: &Message) {
-        let embed = CreateEmbed::new()
-            .title("Developer Commands")
-            .description(
-                "**System:** `dev system` / `dev sysinfo`\n\
-                 **Git:** `dev gitpull`, `dev sync`\n\
-                 **Servers:** `dev servers`, `dev leave <guild_id>`\n\
-                 **Redis:** `dev redis <get|set|search|info|cinfo|showall>`\n\
-                 **Logs:** `dev logs [n]`\n\
-                 **Process:** `dev uptime`, `dev ping`, `dev close`\n\
-                 **Disabled in Rust build:** `dev eval`, `dev load`/`unload`/`reload`",
-            )
-            .color(colors::BLACK)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
+/// Show how long the bot process has been running.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "uptime"
+)]
+async fn dev_uptime(ctx: Context<'_>) -> Result<(), Error> {
+    let secs = ctx.data().state.uptime_secs();
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    ctx.say(format!("Uptime: {h}h {m}m {s}s")).await?;
+    Ok(())
+}
+
+/// Trivial liveness check.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "ping"
+)]
+async fn dev_ping(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.say("Pong (dev)!").await?;
+    Ok(())
 }
 
 // ---- free helpers ---------------------------------------------------------

@@ -1,12 +1,12 @@
 use super::Cog;
 use crate::entities::{premium_tokens, settings_users};
-use crate::state::{AppState, CommandInvocation};
-use crate::utils::embeds::error_embed;
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::AppState;
 use crate::utils::format;
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, Order, QueryFilter, QueryOrder, Set};
-use serenity::all::{Colour, Context, CreateEmbed, CreateMessage, Message, Timestamp};
+use serenity::all::{Colour, CreateEmbed, CreateMessage, Timestamp};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -79,310 +79,282 @@ impl PremiumCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
         Arc::new(Self { state })
     }
-
-    // ---- shared helpers --------------------------------------------------
-
-    async fn reply_embed(&self, ctx: &Context, msg: &Message, embed: CreateEmbed) {
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-    }
-
-    async fn reply_error(&self, ctx: &Context, msg: &Message, text: &str) {
-        self.reply_embed(ctx, msg, error_embed(text)).await;
-    }
-
-    /// Resolve a user's current premium tier as a raw level (0-3).
-    async fn user_premium_level(&self, user_id: u64) -> u8 {
-        let level = settings_users::Entity::find_by_id(user_id as i64)
-            .one(self.state.users_orm())
-            .await
-            .ok()
-            .flatten()
-            .map(|m| m.patron_level);
-        PremiumLevel::from_level(level.unwrap_or(0)).as_u8()
-    }
-
-    // ---- commands --------------------------------------------------------
-
-    /// `premium` / `premium info` — show the invoker's tier and perks.
-    async fn cmd_info(&self, ctx: &Context, msg: &Message) {
-        let level =
-            PremiumLevel::from_level(self.user_premium_level(msg.author.id.get()).await as i64);
-        let embed = CreateEmbed::new()
-            .title(format!("{ICON} Premium Status"))
-            .description(format!(
-                "**Tier:** {}\n\n**Perks:**\n{}",
-                level.name(),
-                level.perks()
-            ))
-            .color(AQUA)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    /// `premium activate <token>` / `premium redeem <token>` — redeem a token.
-    async fn cmd_activate(&self, ctx: &Context, msg: &Message, token: &str) {
-        let token = token.trim();
-        if token.is_empty() {
-            self.reply_error(ctx, msg, "Usage: `premium activate <token>`")
-                .await;
-            return;
-        }
-
-        let row = premium_tokens::Entity::find_by_id(token)
-            .one(self.state.users_orm())
-            .await
-            .ok()
-            .flatten();
-
-        let Some(m) = row else {
-            self.reply_error(ctx, msg, "That token is invalid.").await;
-            return;
-        };
-        let level = m.level;
-        if m.redeemed {
-            self.reply_error(ctx, msg, "That token has already been redeemed.")
-                .await;
-            return;
-        }
-
-        let user_id = msg.author.id.get() as i64;
-
-        // Burn the token atomically: the UPDATE only matches while redeemed is
-        // still false, so of two concurrent redemptions exactly one affects a
-        // row — a token can never be redeemed twice via a check-then-act race.
-        let burn = premium_tokens::Entity::update_many()
-            .col_expr(premium_tokens::Column::Redeemed, Expr::value(true))
-            .col_expr(premium_tokens::Column::OwnerId, Expr::value(user_id))
-            .filter(premium_tokens::Column::Token.eq(token))
-            .filter(premium_tokens::Column::Redeemed.eq(false))
-            .exec(self.state.users_orm())
-            .await;
-        match burn {
-            Ok(res) if res.rows_affected == 1 => {}
-            Ok(_) => {
-                self.reply_error(ctx, msg, "That token has already been redeemed.")
-                    .await;
-                return;
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to redeem premium token");
-                self.reply_error(ctx, msg, "Failed to redeem that token. Try again later.")
-                    .await;
-                return;
-            }
-        }
-
-        // Apply the token's tier, but never downgrade a user who already holds a
-        // higher tier (e.g. redeeming a Basic token after a Max one).
-        let existing = settings_users::Entity::find_by_id(user_id)
-            .one(self.state.users_orm())
-            .await
-            .ok()
-            .flatten()
-            .map(|s| s.patron_level)
-            .unwrap_or(0);
-        let new_level = level.max(existing);
-        let _ = settings_users::Entity::insert(settings_users::ActiveModel {
-            user_id: Set(user_id),
-            patron_level: Set(new_level),
-            ..Default::default()
-        })
-        .on_conflict(
-            OnConflict::column(settings_users::Column::UserId)
-                .update_columns([settings_users::Column::PatronLevel])
-                .to_owned(),
-        )
-        .exec(self.state.users_orm())
-        .await;
-
-        let tier = PremiumLevel::from_level(level);
-        let embed = CreateEmbed::new()
-            .title(format!("{ICON} Premium Activated"))
-            .description(format!(
-                "Your token was redeemed. You are now **{}** tier!\n\n**Perks:**\n{}",
-                tier.name(),
-                tier.perks()
-            ))
-            .color(AQUA)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    /// `premium generate [level]` — OWNER ONLY. Mint a token and DM it.
-    async fn cmd_generate(&self, ctx: &Context, msg: &Message, arg: &str) {
-        if !self.state.is_owner(msg.author.id.get()) {
-            self.reply_error(ctx, msg, "This command is owner-only.")
-                .await;
-            return;
-        }
-
-        // Default to Basic (1); accept 1-3.
-        let arg = arg.trim();
-        let level: i64 = if arg.is_empty() {
-            1
-        } else {
-            match arg.parse::<i64>() {
-                Ok(n) if (1..=3).contains(&n) => n,
-                _ => {
-                    self.reply_error(ctx, msg, "Level must be 1 (Basic), 2 (Pro), or 3 (Max).")
-                        .await;
-                    return;
-                }
-            }
-        };
-
-        let token = Uuid::new_v4().to_string();
-        if let Err(e) = premium_tokens::Entity::insert(premium_tokens::ActiveModel {
-            token: Set(token.clone()),
-            level: Set(level),
-            redeemed: Set(false),
-            owner_id: Set(None),
-        })
-        .exec(self.state.users_orm())
-        .await
-        {
-            tracing::error!(error = ?e, "failed to insert premium token");
-            self.reply_error(ctx, msg, "Failed to generate token.")
-                .await;
-            return;
-        }
-
-        let tier = PremiumLevel::from_level(level);
-        let dm_embed = CreateEmbed::new()
-            .title(format!("{ICON} Premium Token Generated"))
-            .description(format!(
-                "**Tier:** {}\n**Token:**\n```\n{}\n```\nRedeem with `premium activate {}`",
-                tier.name(),
-                token,
-                token
-            ))
-            .color(AQUA)
-            .timestamp(Timestamp::now());
-
-        // Prefer DM to keep the token private; fall back to the channel
-        // (owner-only context) if DMs are closed.
-        let dm_ok = match msg.author.id.create_dm_channel(&ctx.http).await {
-            Ok(dm) => dm
-                .send_message(&ctx.http, CreateMessage::new().embed(dm_embed.clone()))
-                .await
-                .is_ok(),
-            Err(_) => false,
-        };
-
-        if dm_ok {
-            let ack = CreateEmbed::new()
-                .title(format!("{ICON} Premium Token Generated"))
-                .description(format!(
-                    "A **{}** tier token was sent to your DMs.",
-                    tier.name()
-                ))
-                .color(AQUA)
-                .timestamp(Timestamp::now());
-            self.reply_embed(ctx, msg, ack).await;
-        } else {
-            self.reply_embed(ctx, msg, dm_embed).await;
-        }
-    }
-
-    /// `premium tokens` — OWNER ONLY. List outstanding & redeemed tokens.
-    async fn cmd_tokens(&self, ctx: &Context, msg: &Message) {
-        if !self.state.is_owner(msg.author.id.get()) {
-            self.reply_error(ctx, msg, "This command is owner-only.")
-                .await;
-            return;
-        }
-
-        let rows = premium_tokens::Entity::find()
-            .order_by(premium_tokens::Column::Redeemed, Order::Asc)
-            .order_by(premium_tokens::Column::Token, Order::Asc)
-            .all(self.state.users_orm())
-            .await
-            .unwrap_or_default();
-
-        if rows.is_empty() {
-            self.reply_error(ctx, msg, "No premium tokens have been generated yet.")
-                .await;
-            return;
-        }
-
-        let mut outstanding: Vec<String> = Vec::new();
-        let mut redeemed: Vec<String> = Vec::new();
-        for row in &rows {
-            let tier = PremiumLevel::from_level(row.level);
-            if !row.redeemed {
-                outstanding.push(format!("`{}` \u{2014} **{}**", row.token, tier.name()));
-            } else {
-                redeemed.push(format!(
-                    "`{}` \u{2014} **{}** \u{2192} <@{}>",
-                    row.token,
-                    tier.name(),
-                    row.owner_id.unwrap_or(0)
-                ));
-            }
-        }
-
-        let embed = CreateEmbed::new()
-            .title(format!("{ICON} Premium Tokens"))
-            .color(AQUA)
-            .field(
-                format!("Outstanding ({})", outstanding.len()),
-                Self::token_field(&outstanding),
-                false,
-            )
-            .field(
-                format!("Redeemed ({})", redeemed.len()),
-                Self::token_field(&redeemed),
-                false,
-            )
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    /// Render up to 15 token lines into one embed field value (1024 char cap),
-    /// noting any overflow.
-    fn token_field(lines: &[String]) -> String {
-        if lines.is_empty() {
-            return "None".to_string();
-        }
-        let shown = lines.len().min(15);
-        let mut body = lines[..shown].join("\n");
-        if lines.len() > shown {
-            body.push_str(&format!("\n\u{2026}and {} more", lines.len() - shown));
-        }
-        format::truncate(&body, 1024).to_string()
-    }
 }
 
 #[async_trait]
-impl Cog for PremiumCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        if inv.command != "premium" {
-            return false;
-        }
-        let rest = inv.args;
+impl Cog for PremiumCog {}
 
-        // Split sub-command from its remaining argument.
-        let mut parts = rest.splitn(2, ' ');
-        let action = parts.next().unwrap_or("").trim();
-        let arg = parts.next().unwrap_or("").trim();
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![premium()]
+}
 
-        match action {
-            "" | "info" => self.cmd_info(ctx, msg).await,
-            "activate" | "redeem" => self.cmd_activate(ctx, msg, arg).await,
-            "generate" | "gen" => self.cmd_generate(ctx, msg, arg).await,
-            "tokens" | "list" => self.cmd_tokens(ctx, msg).await,
-            _ => {
-                self.reply_error(
-                    ctx,
-                    msg,
-                    "Unknown subcommand. Try `premium info` or `premium activate <token>`.",
-                )
-                .await;
-            }
-        }
-        true
+// ---- commands --------------------------------------------------------------
+
+/// Show your premium tier and perks.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Premium",
+    subcommands("premium_info", "premium_activate", "premium_generate", "premium_tokens_list")
+)]
+async fn premium(ctx: Context<'_>) -> Result<(), Error> {
+    send_premium_info(ctx).await
+}
+
+/// Show your premium tier and perks.
+#[poise::command(slash_command, prefix_command, rename = "info")]
+async fn premium_info(ctx: Context<'_>) -> Result<(), Error> {
+    send_premium_info(ctx).await
+}
+
+/// Activate a premium key.
+#[poise::command(slash_command, prefix_command, rename = "activate")]
+async fn premium_activate(
+    ctx: Context<'_>,
+    #[description = "Premium key"] key: String,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let token = key.trim();
+    if token.is_empty() {
+        return send_error(ctx, "Usage: `premium activate <token>`").await;
     }
+
+    let row = premium_tokens::Entity::find_by_id(token)
+        .one(state.users_orm())
+        .await
+        .ok()
+        .flatten();
+
+    let Some(m) = row else {
+        return send_error(ctx, "That token is invalid.").await;
+    };
+    let level = m.level;
+    if m.redeemed {
+        return send_error(ctx, "That token has already been redeemed.").await;
+    }
+
+    let user_id = ctx.author().id.get() as i64;
+
+    // Burn the token atomically: the UPDATE only matches while redeemed is
+    // still false, so of two concurrent redemptions exactly one affects a
+    // row — a token can never be redeemed twice via a check-then-act race.
+    let burn = premium_tokens::Entity::update_many()
+        .col_expr(premium_tokens::Column::Redeemed, Expr::value(true))
+        .col_expr(premium_tokens::Column::OwnerId, Expr::value(user_id))
+        .filter(premium_tokens::Column::Token.eq(token))
+        .filter(premium_tokens::Column::Redeemed.eq(false))
+        .exec(state.users_orm())
+        .await;
+    match burn {
+        Ok(res) if res.rows_affected == 1 => {}
+        Ok(_) => {
+            return send_error(ctx, "That token has already been redeemed.").await;
+        }
+        Err(e) => {
+            tracing::error!(error = ?e, "failed to redeem premium token");
+            return send_error(ctx, "Failed to redeem that token. Try again later.").await;
+        }
+    }
+
+    // Apply the token's tier, but never downgrade a user who already holds a
+    // higher tier (e.g. redeeming a Basic token after a Max one).
+    let existing = settings_users::Entity::find_by_id(user_id)
+        .one(state.users_orm())
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.patron_level)
+        .unwrap_or(0);
+    let new_level = level.max(existing);
+    let _ = settings_users::Entity::insert(settings_users::ActiveModel {
+        user_id: Set(user_id),
+        patron_level: Set(new_level),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::column(settings_users::Column::UserId)
+            .update_columns([settings_users::Column::PatronLevel])
+            .to_owned(),
+    )
+    .exec(state.users_orm())
+    .await;
+
+    let tier = PremiumLevel::from_level(level);
+    let embed = CreateEmbed::new()
+        .title(format!("{ICON} Premium Activated"))
+        .description(format!(
+            "Your token was redeemed. You are now **{}** tier!\n\n**Perks:**\n{}",
+            tier.name(),
+            tier.perks()
+        ))
+        .color(AQUA)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Generate a new premium token (owner only).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "generate",
+    owners_only,
+    hide_in_help
+)]
+async fn premium_generate(
+    ctx: Context<'_>,
+    #[description = "Tier level (1 = Basic, 2 = Pro, 3 = Max)"]
+    #[min = 1]
+    #[max = 3]
+    level: Option<i64>,
+) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let level = level.unwrap_or(1);
+    let token = Uuid::new_v4().to_string();
+
+    if let Err(e) = premium_tokens::Entity::insert(premium_tokens::ActiveModel {
+        token: Set(token.clone()),
+        level: Set(level),
+        redeemed: Set(false),
+        owner_id: Set(None),
+    })
+    .exec(state.users_orm())
+    .await
+    {
+        tracing::error!(error = ?e, "failed to insert premium token");
+        return send_error(ctx, "Failed to generate token.").await;
+    }
+
+    let tier = PremiumLevel::from_level(level);
+    let dm_embed = CreateEmbed::new()
+        .title(format!("{ICON} Premium Token Generated"))
+        .description(format!(
+            "**Tier:** {}\n**Token:**\n```\n{}\n```\nRedeem with `premium activate {}`",
+            tier.name(),
+            token,
+            token
+        ))
+        .color(AQUA)
+        .timestamp(Timestamp::now());
+
+    // Prefer DM to keep the token private; fall back to channel reply
+    // (owner-only context) if DMs are closed.
+    let sctx = ctx.serenity_context();
+    let dm_ok = match ctx.author().id.create_dm_channel(&sctx.http).await {
+        Ok(dm) => dm
+            .send_message(&sctx.http, CreateMessage::new().embed(dm_embed.clone()))
+            .await
+            .is_ok(),
+        Err(_) => false,
+    };
+
+    if dm_ok {
+        let ack = CreateEmbed::new()
+            .title(format!("{ICON} Premium Token Generated"))
+            .description(format!(
+                "A **{}** tier token was sent to your DMs.",
+                tier.name()
+            ))
+            .color(AQUA)
+            .timestamp(Timestamp::now());
+        send_embed(ctx, ack).await
+    } else {
+        send_embed(ctx, dm_embed).await
+    }
+}
+
+/// List all outstanding and redeemed premium tokens (owner only).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "tokens",
+    owners_only,
+    hide_in_help
+)]
+async fn premium_tokens_list(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+
+    let rows = premium_tokens::Entity::find()
+        .order_by(premium_tokens::Column::Redeemed, Order::Asc)
+        .order_by(premium_tokens::Column::Token, Order::Asc)
+        .all(state.users_orm())
+        .await
+        .unwrap_or_default();
+
+    if rows.is_empty() {
+        return send_error(ctx, "No premium tokens have been generated yet.").await;
+    }
+
+    let mut outstanding: Vec<String> = Vec::new();
+    let mut redeemed: Vec<String> = Vec::new();
+    for row in &rows {
+        let tier = PremiumLevel::from_level(row.level);
+        if !row.redeemed {
+            outstanding.push(format!("`{}` \u{2014} **{}**", row.token, tier.name()));
+        } else {
+            redeemed.push(format!(
+                "`{}` \u{2014} **{}** \u{2192} <@{}>",
+                row.token,
+                tier.name(),
+                row.owner_id.unwrap_or(0)
+            ));
+        }
+    }
+
+    let embed = CreateEmbed::new()
+        .title(format!("{ICON} Premium Tokens"))
+        .color(AQUA)
+        .field(
+            format!("Outstanding ({})", outstanding.len()),
+            token_field(&outstanding),
+            false,
+        )
+        .field(
+            format!("Redeemed ({})", redeemed.len()),
+            token_field(&redeemed),
+            false,
+        )
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+async fn send_premium_info(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let user_id = ctx.author().id.get();
+    let level = fetch_user_level(state, user_id).await;
+    let embed = CreateEmbed::new()
+        .title(format!("{ICON} Premium Status"))
+        .description(format!(
+            "**Tier:** {}\n\n**Perks:**\n{}",
+            level.name(),
+            level.perks()
+        ))
+        .color(AQUA)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+async fn fetch_user_level(state: &AppState, user_id: u64) -> PremiumLevel {
+    let level = settings_users::Entity::find_by_id(user_id as i64)
+        .one(state.users_orm())
+        .await
+        .ok()
+        .flatten()
+        .map(|m| m.patron_level);
+    PremiumLevel::from_level(level.unwrap_or(0))
+}
+
+/// Render up to 15 token lines into one embed field value (1024-char cap),
+/// noting any overflow. Mirrors the old `Self::token_field` method.
+fn token_field(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return "None".to_string();
+    }
+    let shown = lines.len().min(15);
+    let mut body = lines[..shown].join("\n");
+    if lines.len() > shown {
+        body.push_str(&format!("\n\u{2026}and {} more", lines.len() - shown));
+    }
+    format::truncate(&body, 1024).to_string()
 }

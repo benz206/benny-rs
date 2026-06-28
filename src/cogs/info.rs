@@ -1,14 +1,12 @@
 use super::Cog;
-use crate::state::{AppState, CommandInvocation};
-use crate::utils::embeds::error_embed;
-use crate::utils::parse::{parse_role_id, parse_user_id};
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::AppState;
 use crate::utils::{colors, format};
 use async_trait::async_trait;
 use serenity::all::{
-    ButtonStyle, ChannelType, Colour, ComponentInteraction, Context, CreateActionRow, CreateButton,
-    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse, CreateMessage,
-    Guild, GuildId, Member, Message, Permissions, PremiumTier, Role, RoleId, Timestamp, UserId,
-    UserPublicFlags,
+    ButtonStyle, ChannelType, Colour, ComponentInteraction, CreateActionRow, CreateButton,
+    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse, Guild, GuildId,
+    Permissions, PremiumTier, Role, RoleId, Timestamp, UserPublicFlags,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,24 +31,7 @@ impl InfoCog {
 
 #[async_trait]
 impl Cog for InfoCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        let Some(guild_id) = msg.guild_id else {
-            return false;
-        };
-        let arg = inv.args;
-        match inv.command {
-            "info" | "userinfo" | "ui" | "whois" | "i" => {
-                self.cmd_info(ctx, msg, guild_id, arg).await
-            }
-            "serverinfo" | "si" | "guildinfo" => self.cmd_serverinfo(ctx, msg, guild_id).await,
-            "roleinfo" | "ri" => self.cmd_roleinfo(ctx, msg, guild_id, arg).await,
-            "avatar" | "av" | "pfp" => self.cmd_avatar(ctx, msg, guild_id, arg).await,
-            _ => return false,
-        }
-        true
-    }
-
-    async fn on_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
+    async fn on_component(&self, ctx: &serenity::all::Context, interaction: &ComponentInteraction) {
         if !interaction.data.custom_id.starts_with("info:") {
             return;
         }
@@ -65,274 +46,242 @@ impl Cog for InfoCog {
     }
 }
 
-impl InfoCog {
-    // ---- shared helpers --------------------------------------------------
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![info(), serverinfo(), roleinfo(), avatar()]
+}
 
-    async fn reply_embed(&self, ctx: &Context, msg: &Message, embed: CreateEmbed) {
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-    }
+// ---- commands ---------------------------------------------------------------
 
-    async fn reply_error(&self, ctx: &Context, msg: &Message, text: &str) {
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(error_embed(text)))
-            .await;
-    }
+/// Show detailed information about a server member.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Info & Utility",
+    aliases("userinfo", "ui", "whois", "i")
+)]
+async fn info(
+    ctx: Context<'_>,
+    #[description = "Member"] member: Option<serenity::all::Member>,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let sctx = ctx.serenity_context();
 
-    /// Owned snapshot of the guild's roles, preferring the gateway cache and
-    /// falling back to a fresh HTTP fetch on a cold cache.
-    async fn fetch_roles(&self, ctx: &Context, guild_id: GuildId) -> HashMap<RoleId, Role> {
-        if let Some(guild) = ctx.cache.guild(guild_id) {
-            return guild.roles.clone();
+    let member_opt = match member {
+        Some(m) => Some(m),
+        None => ctx.author_member().await.map(|cow| cow.into_owned()),
+    };
+
+    let roles = fetch_roles(sctx, guild_id).await;
+
+    match member_opt {
+        Some(member) => {
+            let embed = build_member_card(&member, &roles);
+            send_embed(ctx, embed).await
         }
-        guild_id.roles(&ctx.http).await.unwrap_or_default()
-    }
-
-    /// Resolve a member target from `<@id>` / `<@!id>` / bare id, or by
-    /// (display) name via the cache. Empty `arg` resolves to `default_id`.
-    async fn resolve_member_id(
-        &self,
-        ctx: &Context,
-        guild_id: GuildId,
-        arg: &str,
-        default_id: u64,
-    ) -> Option<u64> {
-        if arg.is_empty() {
-            return Some(default_id);
+        None => {
+            // Invoker somehow not a member — show a basic user card.
+            let user = ctx.author();
+            let avatar = user.face();
+            let badges = badge_names(user.public_flags.unwrap_or_else(UserPublicFlags::empty));
+            let embed = CreateEmbed::new()
+                .author(CreateEmbedAuthor::new(user.tag()).icon_url(&avatar))
+                .title(user.name.clone())
+                .thumbnail(&avatar)
+                .color(colors::BLURPLE)
+                .field("Username", user.name.clone(), true)
+                .field("ID", format!("`{}`", user.id.get()), true)
+                .field("Bot", yes_no(user.bot), true)
+                .field("Account Created", fmt_ts(user.id.created_at()), false)
+                .field(
+                    "Badges",
+                    if badges.is_empty() {
+                        "None".to_string()
+                    } else {
+                        badges.join(", ")
+                    },
+                    false,
+                )
+                .footer(CreateEmbedFooter::new(
+                    "This user is not a member of this server.",
+                ))
+                .timestamp(Timestamp::now());
+            send_embed(ctx, embed).await
         }
-        if let Some(id) = parse_user_id(arg) {
-            return Some(id);
-        }
-        let guild = ctx.cache.guild(guild_id)?;
-        find_member_by_name(&guild, arg)
-    }
-
-    // ---- commands --------------------------------------------------------
-
-    /// `info [member]` (userinfo/ui/whois/i): rich member card.
-    async fn cmd_info(&self, ctx: &Context, msg: &Message, guild_id: GuildId, arg: &str) {
-        let Some(target_id) = self
-            .resolve_member_id(ctx, guild_id, arg, msg.author.id.get())
-            .await
-        else {
-            self.reply_error(ctx, msg, "Could not find that user.")
-                .await;
-            return;
-        };
-
-        let roles = self.fetch_roles(ctx, guild_id).await;
-
-        match guild_id.member(&ctx.http, UserId::new(target_id)).await {
-            Ok(member) => {
-                let embed = build_member_card(&member, &roles);
-                self.reply_embed(ctx, msg, embed).await;
-            }
-            // User is not a guild member (e.g. left): degrade to a basic card.
-            Err(_) => match UserId::new(target_id).to_user(&ctx.http).await {
-                Ok(user) => {
-                    let avatar = user.face();
-                    let badges =
-                        badge_names(user.public_flags.unwrap_or_else(UserPublicFlags::empty));
-                    let embed = CreateEmbed::new()
-                        .author(CreateEmbedAuthor::new(user.tag()).icon_url(&avatar))
-                        .title(user.name.clone())
-                        .thumbnail(&avatar)
-                        .color(colors::BLURPLE)
-                        .field("Username", user.name.clone(), true)
-                        .field("ID", format!("`{}`", user.id.get()), true)
-                        .field("Bot", yes_no(user.bot), true)
-                        .field("Account Created", fmt_ts(user.id.created_at()), false)
-                        .field(
-                            "Badges",
-                            if badges.is_empty() {
-                                "None".to_string()
-                            } else {
-                                badges.join(", ")
-                            },
-                            false,
-                        )
-                        .footer(CreateEmbedFooter::new(
-                            "This user is not a member of this server.",
-                        ))
-                        .timestamp(Timestamp::now());
-                    self.reply_embed(ctx, msg, embed).await;
-                }
-                Err(_) => {
-                    self.reply_error(ctx, msg, "Could not find that user.")
-                        .await;
-                }
-            },
-        }
-    }
-
-    /// `serverinfo` (si/guildinfo): guild card.
-    async fn cmd_serverinfo(&self, ctx: &Context, msg: &Message, guild_id: GuildId) {
-        // Prefer the fully-populated cached guild; fall back to HTTP.
-        let cached = ctx.cache.guild(guild_id).map(|g| g.clone());
-        let embed = if let Some(guild) = cached {
-            build_server_card_cached(&guild)
-        } else {
-            match self.build_server_card_http(ctx, guild_id).await {
-                Some(e) => e,
-                None => {
-                    self.reply_error(ctx, msg, "Failed to get server info.")
-                        .await;
-                    return;
-                }
-            }
-        };
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    async fn build_server_card_http(
-        &self,
-        ctx: &Context,
-        guild_id: GuildId,
-    ) -> Option<CreateEmbed> {
-        let guild = guild_id
-            .to_partial_guild_with_counts(&ctx.http)
-            .await
-            .ok()?;
-        let channels = guild_id.channels(&ctx.http).await.unwrap_or_default();
-        let (text, voice, categories) = count_channels(channels.values().map(|c| c.kind));
-
-        let total = guild.approximate_member_count.unwrap_or(0);
-        let mut embed = CreateEmbed::new()
-            .title(guild.name.clone())
-            .color(colors::BLURPLE)
-            .field("Owner", format!("<@{}>", guild.owner_id.get()), true)
-            .field("Server ID", format!("`{}`", guild.id.get()), true)
-            .field("Created", fmt_ts(guild.id.created_at()), false)
-            .field("Members", format!("**Total:** {total}"), true)
-            .field(
-                "Channels",
-                format!("**Text:** {text}\n**Voice:** {voice}\n**Categories:** {categories}"),
-                true,
-            )
-            .field("Roles", guild.roles.len().to_string(), true)
-            .field(
-                "Boost Status",
-                boost_status(guild.premium_tier, guild.premium_subscription_count),
-                true,
-            )
-            .field(
-                "Verification",
-                format!("{:?}", guild.verification_level),
-                true,
-            )
-            .timestamp(Timestamp::now());
-        if let Some(icon) = guild.icon_url() {
-            embed = embed.thumbnail(icon);
-        }
-        Some(embed)
-    }
-
-    /// `roleinfo <role>` (ri): role card.
-    async fn cmd_roleinfo(&self, ctx: &Context, msg: &Message, guild_id: GuildId, arg: &str) {
-        if arg.is_empty() {
-            self.reply_error(ctx, msg, "Usage: `roleinfo <@role | id | name>`")
-                .await;
-            return;
-        }
-        let roles = self.fetch_roles(ctx, guild_id).await;
-        let Some(role) = resolve_role(&roles, arg) else {
-            self.reply_error(ctx, msg, "Could not find that role.")
-                .await;
-            return;
-        };
-
-        // Member count from the cache when available.
-        let member_count = ctx.cache.guild(guild_id).map(|guild| {
-            guild
-                .members
-                .values()
-                .filter(|m| m.roles.contains(&role.id))
-                .count()
-        });
-
-        let color = if role.colour.0 == 0 {
-            colors::BLURPLE
-        } else {
-            role.colour
-        };
-        let perms = permission_summary(role.permissions);
-
-        let mut embed = CreateEmbed::new()
-            .title(format!("Role: {}", role.name))
-            .color(color)
-            .field("Name", role.name.clone(), true)
-            .field("Role ID", format!("`{}`", role.id.get()), true)
-            .field("Color", format!("`#{:06X}`", role.colour.0), true)
-            .field("Position", role.position.to_string(), true)
-            .field("Mentionable", yes_no(role.mentionable), true)
-            .field("Hoisted", yes_no(role.hoist), true)
-            .field("Managed", yes_no(role.managed), true)
-            .field("Created", fmt_ts(role.id.created_at()), false)
-            .field("Permissions", perms, false)
-            .timestamp(Timestamp::now());
-        if let Some(count) = member_count {
-            embed = embed.field("Members", count.to_string(), true);
-        }
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    /// `avatar [member]` (av/pfp): avatar card with a delete button.
-    async fn cmd_avatar(&self, ctx: &Context, msg: &Message, guild_id: GuildId, arg: &str) {
-        let Some(target_id) = self
-            .resolve_member_id(ctx, guild_id, arg, msg.author.id.get())
-            .await
-        else {
-            self.reply_error(ctx, msg, "Could not find that user.")
-                .await;
-            return;
-        };
-
-        let roles = self.fetch_roles(ctx, guild_id).await;
-
-        // Prefer the member (so we get the server avatar + role color), falling
-        // back to the global user if they are not in the guild.
-        let (title, avatar, color) = match guild_id.member(&ctx.http, UserId::new(target_id)).await
-        {
-            Ok(member) => (
-                member.display_name().to_string(),
-                member.face(),
-                top_color(&roles, &member.roles),
-            ),
-            Err(_) => match UserId::new(target_id).to_user(&ctx.http).await {
-                Ok(user) => (user.name.clone(), user.face(), colors::BLURPLE),
-                Err(_) => {
-                    self.reply_error(ctx, msg, "Could not find that user.")
-                        .await;
-                    return;
-                }
-            },
-        };
-
-        let embed = CreateEmbed::new()
-            .title(title)
-            .image(avatar)
-            .color(color)
-            .timestamp(Timestamp::now());
-        let button = CreateButton::new(AVATAR_DELETE_ID)
-            .label("Delete")
-            .style(ButtonStyle::Danger)
-            .emoji('🗑');
-        let _ = msg
-            .channel_id
-            .send_message(
-                &ctx.http,
-                CreateMessage::new()
-                    .embed(embed)
-                    .components(vec![CreateActionRow::Buttons(vec![button])]),
-            )
-            .await;
     }
 }
 
-// ---- free helpers --------------------------------------------------------
+/// Show information about this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Info & Utility",
+    aliases("si", "guildinfo")
+)]
+async fn serverinfo(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let sctx = ctx.serenity_context();
+
+    let cached = sctx.cache.guild(guild_id).map(|g| g.clone());
+    let embed = if let Some(guild) = cached {
+        build_server_card_cached(&guild)
+    } else {
+        match build_server_card_http(sctx, guild_id).await {
+            Some(e) => e,
+            None => return send_error(ctx, "Failed to get server info.").await,
+        }
+    };
+    send_embed(ctx, embed).await
+}
+
+/// Show information about a role.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Info & Utility",
+    aliases("ri")
+)]
+async fn roleinfo(
+    ctx: Context<'_>,
+    #[description = "Role"] role: serenity::all::Role,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let sctx = ctx.serenity_context();
+
+    let member_count = sctx.cache.guild(guild_id).map(|guild| {
+        guild
+            .members
+            .values()
+            .filter(|m| m.roles.contains(&role.id))
+            .count()
+    });
+
+    let color = if role.colour.0 == 0 {
+        colors::BLURPLE
+    } else {
+        role.colour
+    };
+    let perms = permission_summary(role.permissions);
+
+    let mut embed = CreateEmbed::new()
+        .title(format!("Role: {}", role.name))
+        .color(color)
+        .field("Name", role.name.clone(), true)
+        .field("Role ID", format!("`{}`", role.id.get()), true)
+        .field("Color", format!("`#{:06X}`", role.colour.0), true)
+        .field("Position", role.position.to_string(), true)
+        .field("Mentionable", yes_no(role.mentionable), true)
+        .field("Hoisted", yes_no(role.hoist), true)
+        .field("Managed", yes_no(role.managed), true)
+        .field("Created", fmt_ts(role.id.created_at()), false)
+        .field("Permissions", perms, false)
+        .timestamp(Timestamp::now());
+    if let Some(count) = member_count {
+        embed = embed.field("Members", count.to_string(), true);
+    }
+    send_embed(ctx, embed).await
+}
+
+/// Show a user's avatar.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Info & Utility",
+    aliases("av", "pfp")
+)]
+async fn avatar(
+    ctx: Context<'_>,
+    #[description = "Member"] member: Option<serenity::all::User>,
+) -> Result<(), Error> {
+    let sctx = ctx.serenity_context();
+    let target_user = member.as_ref().unwrap_or_else(|| ctx.author());
+
+    let (title, avatar_url, color) = if let Some(guild_id) = ctx.guild_id() {
+        let roles = fetch_roles(sctx, guild_id).await;
+        match guild_id.member(sctx, target_user.id).await {
+            Ok(m) => (
+                m.display_name().to_string(),
+                m.face(),
+                top_color(&roles, &m.roles),
+            ),
+            Err(_) => (target_user.name.clone(), target_user.face(), colors::BLURPLE),
+        }
+    } else {
+        (target_user.name.clone(), target_user.face(), colors::BLURPLE)
+    };
+
+    let embed = CreateEmbed::new()
+        .title(title)
+        .image(avatar_url)
+        .color(color)
+        .timestamp(Timestamp::now());
+    let button = CreateButton::new(AVATAR_DELETE_ID)
+        .label("Delete")
+        .style(ButtonStyle::Danger)
+        .emoji('🗑');
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(embed)
+            .components(vec![CreateActionRow::Buttons(vec![button])]),
+    )
+    .await?;
+    Ok(())
+}
+
+// ---- free helpers -----------------------------------------------------------
+
+/// Owned snapshot of the guild's roles, preferring the gateway cache and
+/// falling back to a fresh HTTP fetch on a cold cache.
+async fn fetch_roles(ctx: &serenity::all::Context, guild_id: GuildId) -> HashMap<RoleId, Role> {
+    if let Some(guild) = ctx.cache.guild(guild_id) {
+        return guild.roles.clone();
+    }
+    guild_id.roles(&ctx.http).await.unwrap_or_default()
+}
+
+async fn build_server_card_http(
+    ctx: &serenity::all::Context,
+    guild_id: GuildId,
+) -> Option<CreateEmbed> {
+    let guild = guild_id
+        .to_partial_guild_with_counts(&ctx.http)
+        .await
+        .ok()?;
+    let channels = guild_id.channels(&ctx.http).await.unwrap_or_default();
+    let (text, voice, categories) = count_channels(channels.values().map(|c| c.kind));
+
+    let total = guild.approximate_member_count.unwrap_or(0);
+    let mut embed = CreateEmbed::new()
+        .title(guild.name.clone())
+        .color(colors::BLURPLE)
+        .field("Owner", format!("<@{}>", guild.owner_id.get()), true)
+        .field("Server ID", format!("`{}`", guild.id.get()), true)
+        .field("Created", fmt_ts(guild.id.created_at()), false)
+        .field("Members", format!("**Total:** {total}"), true)
+        .field(
+            "Channels",
+            format!("**Text:** {text}\n**Voice:** {voice}\n**Categories:** {categories}"),
+            true,
+        )
+        .field("Roles", guild.roles.len().to_string(), true)
+        .field(
+            "Boost Status",
+            boost_status(guild.premium_tier, guild.premium_subscription_count),
+            true,
+        )
+        .field(
+            "Verification",
+            format!("{:?}", guild.verification_level),
+            true,
+        )
+        .timestamp(Timestamp::now());
+    if let Some(icon) = guild.icon_url() {
+        embed = embed.thumbnail(icon);
+    }
+    Some(embed)
+}
 
 /// Format a snowflake/instant as an absolute + relative Discord timestamp.
 fn fmt_ts(t: Timestamp) -> String {
@@ -385,7 +334,7 @@ fn badge_names(flags: UserPublicFlags) -> Vec<&'static str> {
 }
 
 /// Build the member card embed (info command, member present).
-fn build_member_card(member: &Member, roles: &HashMap<RoleId, Role>) -> CreateEmbed {
+fn build_member_card(member: &serenity::all::Member, roles: &HashMap<RoleId, Role>) -> CreateEmbed {
     let user = &member.user;
     let avatar = member.face();
     let color = top_color(roles, &member.roles);
@@ -524,32 +473,4 @@ fn permission_summary(perms: Permissions) -> String {
     } else {
         format::truncate(&names.join(", "), 1024).to_string()
     }
-}
-
-/// Resolve a role by `<@&id>` / bare id, then by exact, then partial name.
-fn resolve_role<'a>(roles: &'a HashMap<RoleId, Role>, arg: &str) -> Option<&'a Role> {
-    if let Some(id) = parse_role_id(arg) {
-        if let Some(role) = roles.get(&RoleId::new(id)) {
-            return Some(role);
-        }
-    }
-    let q = arg.trim().to_lowercase();
-    roles
-        .values()
-        .find(|r| r.name.to_lowercase() == q)
-        .or_else(|| roles.values().find(|r| r.name.to_lowercase().contains(&q)))
-}
-
-/// Find a member id by username / nickname / display name (case-insensitive).
-fn find_member_by_name(guild: &Guild, query: &str) -> Option<u64> {
-    let q = query.trim().to_lowercase();
-    guild
-        .members
-        .values()
-        .find(|m| {
-            m.user.name.to_lowercase() == q
-                || m.display_name().to_lowercase() == q
-                || m.nick.as_deref().map(str::to_lowercase) == Some(q.clone())
-        })
-        .map(|m| m.user.id.get())
 }

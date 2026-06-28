@@ -1,14 +1,12 @@
 use super::Cog;
 use crate::entities::prefixes;
-use crate::state::{AppState, CommandInvocation};
-use crate::utils::{colors, embeds, perms};
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::AppState;
+use crate::utils::{colors, embeds};
 use async_trait::async_trait;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
-use serenity::all::{
-    Context, CreateEmbed, CreateMessage, Guild, GuildId, Message, Permissions, Timestamp,
-    UnavailableGuild,
-};
+use serenity::all::{CreateEmbed, Guild, Timestamp, UnavailableGuild};
 use std::sync::Arc;
 
 /// Maximum number of custom prefixes a guild may have.
@@ -27,37 +25,12 @@ impl PrefixesCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
         Arc::new(Self { state })
     }
-
-    /// Sanitize a raw prefix: strip leading/trailing whitespace, reject the `:|:`
-    /// separator, enforce non-empty and max length. Inner spaces are allowed.
-    fn sanitize_prefix(raw: &str) -> Result<String, String> {
-        if raw.contains(LEGACY_SEP) {
-            return Err("Why do you have `:|:` as a prefix...".to_string());
-        }
-        let clean = raw.trim();
-        if clean.is_empty() {
-            return Err("You cannot have an empty prefix".to_string());
-        }
-        if clean.chars().count() > MAX_PREFIX_LEN {
-            return Err(format!(
-                "Prefixes can be at most {MAX_PREFIX_LEN} characters long"
-            ));
-        }
-        Ok(clean.to_string())
-    }
-
-    /// Current prefixes for a guild: cache first, falling back to the DB. An
-    /// empty result means the guild has no custom prefixes (the default still
-    /// works via the bot's configured prefix / mention).
-    async fn current_prefixes(&self, guild_id: u64) -> Vec<String> {
-        self.state.custom_prefixes(guild_id).await
-    }
 }
 
 #[async_trait]
 impl Cog for PrefixesCog {
     /// Hydrate `prefix_cache` from the DB on startup.
-    async fn on_ready(&self, _ctx: &Context) {
+    async fn on_ready(&self, _ctx: &serenity::all::Context) {
         let rows = prefixes::Entity::find()
             .all(self.state.servers_orm())
             .await
@@ -81,13 +54,13 @@ impl Cog for PrefixesCog {
 
     /// On joining a guild (or initial guild sync), ensure a default prefix row
     /// and cache entry exist. Idempotent: skips guilds already cached.
-    async fn on_guild_create(&self, _ctx: &Context, guild: &Guild) {
+    async fn on_guild_create(&self, _ctx: &serenity::all::Context, guild: &Guild) {
         let guild_id = guild.id.get();
         if self.state.prefix_cache.contains_key(&guild_id) {
             return;
         }
 
-        let existing = self.current_prefixes(guild_id).await;
+        let existing = current_prefixes(&self.state, guild_id).await;
         if existing.is_empty() {
             let default = self.state.prefix().to_string();
             let _ = prefixes::Entity::insert(prefixes::ActiveModel {
@@ -110,7 +83,7 @@ impl Cog for PrefixesCog {
     /// On leaving a guild, remove its prefixes from the DB and cache.
     async fn on_guild_delete(
         &self,
-        _ctx: &Context,
+        _ctx: &serenity::all::Context,
         incomplete: UnavailableGuild,
         _full: Option<Guild>,
     ) {
@@ -121,252 +94,233 @@ impl Cog for PrefixesCog {
             .await;
         self.state.prefix_cache.remove(&guild_id);
     }
-
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        if inv.command != "prefix" {
-            return false;
-        }
-
-        let guild_id = match msg.guild_id {
-            Some(g) => g.get(),
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "This command can only be used in a server.")
-                    .await;
-                return true;
-            }
-        };
-
-        // splitn(2): keep the remainder intact so multi-word prefixes work.
-        let mut it = inv.args.splitn(2, ' ');
-        let sub = it.next().unwrap_or("");
-        let rest = it.next().unwrap_or("").trim();
-
-        // Every mutation requires Manage Server; `list` stays open to everyone.
-        if matches!(
-            sub,
-            "add" | "create" | "+" | "remove" | "del" | "rm" | "delete" | "-" | "reset"
-        ) && !perms::require_perm(
-            ctx,
-            msg,
-            GuildId::new(guild_id),
-            Permissions::MANAGE_GUILD,
-            "Manage Server",
-        )
-        .await
-        {
-            return true;
-        }
-
-        match sub {
-            "add" | "create" | "+" => self.cmd_add(ctx, msg, guild_id, rest).await,
-            "remove" | "del" | "rm" | "delete" | "-" => {
-                self.cmd_remove(ctx, msg, guild_id, rest).await
-            }
-            "list" | "view" | "config" => self.cmd_list(ctx, msg, guild_id).await,
-            "reset" => self.cmd_reset(ctx, msg, guild_id).await,
-            _ => self.send_help(ctx, msg).await,
-        }
-        true
-    }
 }
 
-impl PrefixesCog {
-    async fn send_help(&self, ctx: &Context, msg: &Message) {
-        let _ = msg
-            .channel_id
-            .say(
-                &ctx.http,
-                "Usage: `prefix add <prefix>` | `prefix remove <prefix>` | `prefix list` | `prefix reset`",
-            )
-            .await;
-    }
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![prefix()]
+}
 
-    async fn send_embed(&self, ctx: &Context, msg: &Message, embed: CreateEmbed) {
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-    }
+// ---- commands --------------------------------------------------------------
 
-    async fn cmd_add(&self, ctx: &Context, msg: &Message, guild_id: u64, raw: &str) {
-        if raw.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "Usage: prefix add <prefix>")
-                .await;
-            return;
-        }
+/// Manage custom command prefixes for this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Prefixes",
+    subcommands("prefix_add", "prefix_remove", "prefix_list", "prefix_reset"),
+    subcommand_required,
+    guild_only
+)]
+async fn prefix(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
 
-        let clean = match Self::sanitize_prefix(raw) {
-            Ok(p) => p,
-            Err(e) => {
-                self.send_embed(ctx, msg, embeds::error_embed(&e)).await;
-                return;
-            }
-        };
+/// Add a new custom prefix to this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "add",
+    required_permissions = "MANAGE_GUILD",
+    guild_only
+)]
+async fn prefix_add(
+    ctx: Context<'_>,
+    #[description = "Prefix to add"] prefix: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
 
-        let mut prefixes = self.current_prefixes(guild_id).await;
+    let clean = match sanitize_prefix(&prefix) {
+        Ok(p) => p,
+        Err(e) => return send_error(ctx, &e).await,
+    };
 
-        if prefixes.iter().any(|p| p == &clean) {
-            self.send_embed(
-                ctx,
-                msg,
-                embeds::error_embed(&format!(
-                    "You already have `{clean}` as a prefix in your server"
-                )),
-            )
-            .await;
-            return;
-        }
-        if prefixes.len() >= MAX_PREFIXES {
-            self.send_embed(
-                ctx,
-                msg,
-                embeds::error_embed(&format!("You can only have up to {MAX_PREFIXES} prefixes")),
-            )
-            .await;
-            return;
-        }
+    let mut guild_prefixes = current_prefixes(state, guild_id).await;
 
-        let result = prefixes::Entity::insert(prefixes::ActiveModel {
-            guild_id: Set(guild_id as i64),
-            prefix: Set(clean.clone()),
-        })
-        .on_conflict(
-            OnConflict::columns([prefixes::Column::GuildId, prefixes::Column::Prefix])
-                .do_nothing()
-                .to_owned(),
-        )
-        .exec(self.state.servers_orm())
-        .await;
-
-        match result {
-            Ok(_) | Err(DbErr::RecordNotInserted) => {}
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to add prefix");
-                self.send_embed(ctx, msg, embeds::error_embed("Database error."))
-                    .await;
-                return;
-            }
-        }
-
-        prefixes.push(clean.clone());
-        prefixes.sort_by_key(|p| p.len());
-        self.state.prefix_cache.insert(guild_id, prefixes);
-
-        self.send_embed(
+    if guild_prefixes.iter().any(|p| p == &clean) {
+        return send_error(
             ctx,
-            msg,
-            embeds::success_embed(
-                "Success",
-                &format!("Successfully added `{clean}` to your server"),
-            ),
+            &format!("You already have `{clean}` as a prefix in your server"),
         )
         .await;
     }
-
-    async fn cmd_remove(&self, ctx: &Context, msg: &Message, guild_id: u64, raw: &str) {
-        if raw.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "Usage: prefix remove <prefix>")
-                .await;
-            return;
-        }
-
-        let clean = match Self::sanitize_prefix(raw) {
-            Ok(p) => p,
-            Err(e) => {
-                self.send_embed(ctx, msg, embeds::error_embed(&e)).await;
-                return;
-            }
-        };
-
-        let mut prefixes = self.current_prefixes(guild_id).await;
-        if !prefixes.iter().any(|p| p == &clean) {
-            self.send_embed(
-                ctx,
-                msg,
-                embeds::error_embed(&format!(
-                    "You don't have `{clean}` as a prefix in your server"
-                )),
-            )
-            .await;
-            return;
-        }
-
-        let result = prefixes::Entity::delete_many()
-            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
-            .filter(prefixes::Column::Prefix.eq(clean.as_str()))
-            .exec(self.state.servers_orm())
-            .await;
-
-        if let Err(e) = result {
-            tracing::error!(error = ?e, "failed to remove prefix");
-            self.send_embed(ctx, msg, embeds::error_embed("Database error."))
-                .await;
-            return;
-        }
-
-        prefixes.retain(|p| p != &clean);
-        self.state.prefix_cache.insert(guild_id, prefixes);
-
-        self.send_embed(
+    if guild_prefixes.len() >= MAX_PREFIXES {
+        return send_error(
             ctx,
-            msg,
-            embeds::success_embed(
-                "Prefix Removed",
-                &format!("Successfully removed `{clean}` from your server"),
-            ),
+            &format!("You can only have up to {MAX_PREFIXES} prefixes"),
         )
         .await;
     }
 
-    async fn cmd_list(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        let mut prefixes = self.current_prefixes(guild_id).await;
-        if prefixes.is_empty() {
-            prefixes.push(self.state.prefix().to_string());
+    let result = prefixes::Entity::insert(prefixes::ActiveModel {
+        guild_id: Set(guild_id as i64),
+        prefix: Set(clean.clone()),
+    })
+    .on_conflict(
+        OnConflict::columns([prefixes::Column::GuildId, prefixes::Column::Prefix])
+            .do_nothing()
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+
+    match result {
+        Ok(_) | Err(DbErr::RecordNotInserted) => {}
+        Err(e) => {
+            tracing::error!(error = ?e, "failed to add prefix");
+            return send_error(ctx, "Database error.").await;
         }
-
-        let guild_name = ctx
-            .cache
-            .guild(guild_id)
-            .map(|g| g.name.clone())
-            .unwrap_or_else(|| "this server".to_string());
-
-        let mut visual = String::new();
-        for (count, prefix) in prefixes.iter().enumerate() {
-            visual.push_str(&format!("\n{}. {}", count + 1, prefix));
-        }
-
-        let embed = CreateEmbed::new()
-            .title("Prefixes")
-            .description(format!(
-                "Viewing prefixes for {guild_name}\n```md{visual}\n```"
-            ))
-            .color(colors::CYAN)
-            .timestamp(Timestamp::now());
-        self.send_embed(ctx, msg, embed).await;
     }
 
-    async fn cmd_reset(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        let _ = prefixes::Entity::delete_many()
-            .filter(prefixes::Column::GuildId.eq(guild_id as i64))
-            .exec(self.state.servers_orm())
-            .await;
-        self.state.prefix_cache.remove(&guild_id);
+    guild_prefixes.push(clean.clone());
+    guild_prefixes.sort_by_key(|p| p.len());
+    state.prefix_cache.insert(guild_id, guild_prefixes);
 
-        let default = self.state.prefix().to_string();
-        self.send_embed(
+    send_embed(
+        ctx,
+        embeds::success_embed("Success", &format!("Successfully added `{clean}` to your server")),
+    )
+    .await
+}
+
+/// Remove a custom prefix from this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "remove",
+    required_permissions = "MANAGE_GUILD",
+    guild_only
+)]
+async fn prefix_remove(
+    ctx: Context<'_>,
+    #[description = "Prefix to remove"] prefix: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+
+    let clean = match sanitize_prefix(&prefix) {
+        Ok(p) => p,
+        Err(e) => return send_error(ctx, &e).await,
+    };
+
+    let mut guild_prefixes = current_prefixes(state, guild_id).await;
+    if !guild_prefixes.iter().any(|p| p == &clean) {
+        return send_error(
             ctx,
-            msg,
-            embeds::success_embed(
-                "Prefixes Reset",
-                &format!("Reset to the default prefix `{default}`."),
-            ),
+            &format!("You don't have `{clean}` as a prefix in your server"),
         )
         .await;
     }
+
+    let result = prefixes::Entity::delete_many()
+        .filter(prefixes::Column::GuildId.eq(guild_id as i64))
+        .filter(prefixes::Column::Prefix.eq(clean.as_str()))
+        .exec(state.servers_orm())
+        .await;
+
+    if let Err(e) = result {
+        tracing::error!(error = ?e, "failed to remove prefix");
+        return send_error(ctx, "Database error.").await;
+    }
+
+    guild_prefixes.retain(|p| p != &clean);
+    state.prefix_cache.insert(guild_id, guild_prefixes);
+
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Prefix Removed",
+            &format!("Successfully removed `{clean}` from your server"),
+        ),
+    )
+    .await
+}
+
+/// List all custom prefixes for this server.
+#[poise::command(slash_command, prefix_command, rename = "list", guild_only)]
+async fn prefix_list(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let state = &ctx.data().state;
+    let sctx = ctx.serenity_context();
+
+    let mut guild_prefixes = current_prefixes(state, guild_id.get()).await;
+    if guild_prefixes.is_empty() {
+        guild_prefixes.push(state.prefix().to_string());
+    }
+
+    let guild_name = sctx
+        .cache
+        .guild(guild_id)
+        .map(|g| g.name.clone())
+        .unwrap_or_else(|| "this server".to_string());
+
+    let mut visual = String::new();
+    for (count, prefix) in guild_prefixes.iter().enumerate() {
+        visual.push_str(&format!("\n{}. {}", count + 1, prefix));
+    }
+
+    let embed = CreateEmbed::new()
+        .title("Prefixes")
+        .description(format!(
+            "Viewing prefixes for {guild_name}\n```md{visual}\n```"
+        ))
+        .color(colors::CYAN)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Reset all custom prefixes back to the default.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    rename = "reset",
+    required_permissions = "MANAGE_GUILD",
+    guild_only
+)]
+async fn prefix_reset(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+
+    let _ = prefixes::Entity::delete_many()
+        .filter(prefixes::Column::GuildId.eq(guild_id as i64))
+        .exec(state.servers_orm())
+        .await;
+    state.prefix_cache.remove(&guild_id);
+
+    let default = state.prefix().to_string();
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Prefixes Reset",
+            &format!("Reset to the default prefix `{default}`."),
+        ),
+    )
+    .await
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+/// Sanitize a raw prefix: strip leading/trailing whitespace, reject the `:|:`
+/// separator, enforce non-empty and max length. Inner spaces are allowed.
+fn sanitize_prefix(raw: &str) -> Result<String, String> {
+    if raw.contains(LEGACY_SEP) {
+        return Err("Why do you have `:|:` as a prefix...".to_string());
+    }
+    let clean = raw.trim();
+    if clean.is_empty() {
+        return Err("You cannot have an empty prefix".to_string());
+    }
+    if clean.chars().count() > MAX_PREFIX_LEN {
+        return Err(format!(
+            "Prefixes can be at most {MAX_PREFIX_LEN} characters long"
+        ));
+    }
+    Ok(clean.to_string())
+}
+
+/// Current prefixes for a guild: cache first, falling back to the DB. An
+/// empty result means the guild has no custom prefixes (the default still
+/// works via the bot's configured prefix / mention).
+async fn current_prefixes(state: &AppState, guild_id: u64) -> Vec<String> {
+    state.custom_prefixes(guild_id).await
 }

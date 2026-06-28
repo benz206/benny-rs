@@ -1,15 +1,11 @@
 use super::Cog;
-use crate::state::{AppState, CommandInvocation};
+use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::state::AppState;
 use crate::utils::format::humanize_duration;
-use crate::utils::parse::parse_user_id;
-use crate::utils::{colors, embeds};
-use async_trait::async_trait;
+use crate::utils::colors;
 use chrono::Utc;
-use serenity::all::{
-    Context, CreateEmbed, CreateEmbedFooter, CreateMessage, EditMessage, Message, Permissions,
-    Timestamp, UserId,
-};
-use std::sync::{Arc, OnceLock};
+use serenity::all::{CreateEmbed, CreateEmbedFooter, Member, Permissions, Timestamp};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{fs, path::PathBuf};
 
@@ -18,8 +14,7 @@ const REPO_URL: &str = "https://github.com/benz206/benny-rs";
 /// Shared note pinned to the ping embed footer.
 const PING_NOTE: &str = "Please note that this will be much slower when you use slash commands";
 
-/// Cached source-tree statistics: computed once by walking `src/` on the first
-/// `about`/`files` invocation.
+/// Cached source-tree statistics: computed once at process start.
 struct FileStats {
     files: u64,
     lines: u64,
@@ -28,361 +23,316 @@ struct FileStats {
     per_file: Vec<(String, u64)>,
 }
 
+static FILE_STATS: LazyLock<FileStats> = LazyLock::new(compute_file_stats);
+
 pub struct BaseCog {
     state: Arc<AppState>,
-    stats: OnceLock<FileStats>,
 }
 
 impl BaseCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self {
-            state,
-            stats: OnceLock::new(),
-        })
-    }
-
-    /// Lazily compute (and cache) the source stats.
-    fn stats(&self) -> &FileStats {
-        self.stats.get_or_init(compute_file_stats)
+        Arc::new(Self { state })
     }
 }
 
-#[async_trait]
-impl Cog for BaseCog {
-    async fn on_command(&self, ctx: &Context, msg: &Message, inv: &CommandInvocation<'_>) -> bool {
-        let arg = inv.args;
-        match inv.command {
-            "ping" | "pong" => self.cmd_ping(ctx, msg).await,
-            "about" => self.cmd_about(ctx, msg).await,
-            "version" => self.cmd_version(ctx, msg).await,
-            "uptime" => self.cmd_uptime(ctx, msg).await,
-            "files" => self.cmd_files(ctx, msg).await,
-            "invite" => self.cmd_invite(ctx, msg).await,
-            "charinfo" | "ci" | "char" => self.cmd_charinfo(ctx, msg, arg).await,
-            "permissions" | "perms" => self.cmd_permissions(ctx, msg, arg).await,
-            _ => return false,
-        }
-        true
-    }
+impl Cog for BaseCog {}
+
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![
+        ping(),
+        about(),
+        version(),
+        uptime(),
+        files(),
+        invite(),
+        charinfo(),
+        perms(),
+    ]
 }
 
-impl BaseCog {
-    async fn reply_embed(&self, ctx: &Context, msg: &Message, embed: CreateEmbed) {
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-    }
+// ---- commands ---------------------------------------------------------------
 
-    // ---- ping -------------------------------------------------------------
+/// Check the bot's latency.
+#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+async fn ping(ctx: Context<'_>) -> Result<(), Error> {
+    let initial = CreateEmbed::new()
+        .title("Pinging...")
+        .description("Checking Ping")
+        .color(colors::GRAY)
+        .footer(CreateEmbedFooter::new(PING_NOTE))
+        .timestamp(Timestamp::now());
 
-    async fn cmd_ping(&self, ctx: &Context, msg: &Message) {
-        let initial = CreateEmbed::new()
-            .title("Pinging...")
-            .description("Checking Ping")
-            .color(colors::GRAY)
-            .footer(CreateEmbedFooter::new(PING_NOTE))
-            .timestamp(Timestamp::now());
+    let start = Instant::now();
+    let handle = ctx
+        .send(poise::CreateReply::default().embed(initial))
+        .await?;
+    let rest = start.elapsed().as_secs_f64();
 
-        let start = Instant::now();
-        let sent = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(initial))
-            .await;
-        let Ok(mut sent) = sent else { return };
-        let rest = start.elapsed().as_secs_f64();
+    // Color tiers (seconds): >=3 red, >=2 orange, >=1 yellow.
+    let color = if rest >= 3.0 {
+        colors::RED
+    } else if rest >= 2.0 {
+        colors::ORANGE
+    } else if rest >= 1.0 {
+        colors::YELLOW
+    } else {
+        colors::GREEN
+    };
 
-        // Color tiers (seconds): >=3 red, >=2 orange, >=1 yellow.
-        let color = if rest >= 3.0 {
-            colors::RED
-        } else if rest >= 2.0 {
-            colors::ORANGE
-        } else if rest >= 1.0 {
-            colors::YELLOW
-        } else {
-            colors::GREEN
-        };
+    let edit_start = Instant::now();
+    let result = CreateEmbed::new()
+        .title("Pong!")
+        .description(format!(
+            "**Overall Latency:** `{:.0} ms`\n**REST Latency:** `{:.0} ms`",
+            rest * 1000.0,
+            edit_start.elapsed().as_secs_f64() * 1000.0
+        ))
+        .color(color)
+        .footer(CreateEmbedFooter::new(PING_NOTE))
+        .timestamp(Timestamp::now());
+    handle
+        .edit(ctx, poise::CreateReply::default().embed(result))
+        .await?;
+    Ok(())
+}
 
-        // Second REST sample taken around the edit call.
-        let edit_start = Instant::now();
-        let result = CreateEmbed::new()
-            .title("Pong!")
-            .description(format!(
-                "**Overall Latency:** `{:.0} ms`\n**REST Latency:** `{:.0} ms`",
-                rest * 1000.0,
-                edit_start.elapsed().as_secs_f64() * 1000.0
-            ))
-            .color(color)
-            .footer(CreateEmbedFooter::new(PING_NOTE))
-            .timestamp(Timestamp::now());
-        let _ = sent.edit(&ctx.http, EditMessage::new().embed(result)).await;
-    }
-
-    // ---- about ------------------------------------------------------------
-
-    async fn cmd_about(&self, ctx: &Context, msg: &Message) {
-        // Pull cache-backed counts/identity synchronously so no `!Send` cache
-        // ref is held across an await point.
-        let (guild_count, user_count, bot_name, bot_avatar) = {
-            let guilds = ctx.cache.guilds();
-            let gc = guilds.len();
-            let mut uc: u64 = 0;
-            for gid in &guilds {
-                if let Some(g) = ctx.cache.guild(*gid) {
-                    uc += g.member_count;
-                }
+/// Show information about the bot.
+#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+async fn about(ctx: Context<'_>) -> Result<(), Error> {
+    let sctx = ctx.serenity_context();
+    let (guild_count, user_count, bot_name, bot_avatar) = {
+        let guilds = sctx.cache.guilds();
+        let gc = guilds.len();
+        let mut uc: u64 = 0;
+        for gid in &guilds {
+            if let Some(g) = sctx.cache.guild(*gid) {
+                uc += g.member_count;
             }
-            let cu = ctx.cache.current_user();
-            (gc, uc, cu.name.clone(), cu.avatar_url())
-        };
-
-        let s = self.stats();
-        let uptime = humanize_duration(Duration::from_secs(self.state.uptime_secs()));
-
-        let mut footer = CreateEmbedFooter::new(bot_name);
-        if let Some(av) = bot_avatar {
-            footer = footer.icon_url(av);
         }
+        let cu = sctx.cache.current_user();
+        (gc, uc, cu.name.clone(), cu.avatar_url())
+    };
 
-        let embed = CreateEmbed::new()
-            .title("About the Bot")
-            .description(
-                "A Bot I've made for fun, friends and learning Rust.\n\
-                The bot also does a lot of odd things I feel I may need such as reading text off \
-                images, playing music, and stealing sheetmusic, lol.\n\
-                Hope you enjoy",
-            )
-            .color(colors::TEAL)
-            .field("Version", format!("v{}", env!("CARGO_PKG_VERSION")), true)
-            .field(
-                "Library",
-                "[serenity](https://github.com/serenity-rs/serenity)",
-                true,
-            )
-            .field("Uptime", uptime, true)
-            .field("Guilds", guild_count.to_string(), true)
-            .field("Users", user_count.to_string(), true)
-            .field(
-                "Source",
-                format!(
-                    "**{}** files\n**{}** lines\n**{}** chars",
-                    s.files, s.lines, s.chars
-                ),
-                true,
-            )
-            .footer(footer)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
+    let s = &*FILE_STATS;
+    let uptime = humanize_duration(Duration::from_secs(ctx.data().state.uptime_secs()));
+
+    let mut footer = CreateEmbedFooter::new(bot_name);
+    if let Some(av) = bot_avatar {
+        footer = footer.icon_url(av);
     }
 
-    // ---- version ----------------------------------------------------------
+    let embed = CreateEmbed::new()
+        .title("About the Bot")
+        .description(
+            "A Bot I've made for fun, friends and learning Rust.\n\
+            The bot also does a lot of odd things I feel I may need such as reading text off \
+            images, playing music, and stealing sheetmusic, lol.\n\
+            Hope you enjoy",
+        )
+        .color(colors::TEAL)
+        .field("Version", format!("v{}", env!("CARGO_PKG_VERSION")), true)
+        .field(
+            "Library",
+            "[serenity](https://github.com/serenity-rs/serenity)",
+            true,
+        )
+        .field("Uptime", uptime, true)
+        .field("Guilds", guild_count.to_string(), true)
+        .field("Users", user_count.to_string(), true)
+        .field(
+            "Source",
+            format!(
+                "**{}** files\n**{}** lines\n**{}** chars",
+                s.files, s.lines, s.chars
+            ),
+            true,
+        )
+        .footer(footer)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
 
-    async fn cmd_version(&self, ctx: &Context, msg: &Message) {
-        let Some((head_short, commits)) = latest_commits(5) else {
-            self.reply_embed(
-                ctx,
-                msg,
-                embeds::error_embed("Could not read the git history."),
-            )
-            .await;
-            return;
-        };
-        let embed = CreateEmbed::new()
-            .title(format!("Current Version: {head_short}"))
-            .description(commits)
-            .color(colors::TEAL)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
+/// Show the current git version and recent commits.
+#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+async fn version(ctx: Context<'_>) -> Result<(), Error> {
+    let Some((head_short, commits)) = latest_commits(5) else {
+        return send_error(ctx, "Could not read the git history.").await;
+    };
+    let embed = CreateEmbed::new()
+        .title(format!("Current Version: {head_short}"))
+        .description(commits)
+        .color(colors::TEAL)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
 
-    // ---- uptime -----------------------------------------------------------
+/// Show how long the bot has been running.
+#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+async fn uptime(ctx: Context<'_>) -> Result<(), Error> {
+    let sctx = ctx.serenity_context();
+    let bot_name = sctx.cache.current_user().name.clone();
+    let secs = ctx.data().state.uptime_secs();
+    let started = Utc::now().timestamp() - secs as i64;
+    let humanized = humanize_duration(Duration::from_secs(secs));
 
-    async fn cmd_uptime(&self, ctx: &Context, msg: &Message) {
-        let bot_name = ctx.cache.current_user().name.clone();
-        let secs = self.state.uptime_secs();
-        let started = Utc::now().timestamp() - secs as i64;
-        let humanized = humanize_duration(Duration::from_secs(secs));
+    let embed = CreateEmbed::new()
+        .title(format!("{bot_name} Uptime"))
+        .description(format!(
+            "Started at <t:{started}:F>\nTotal Uptime: {humanized} (<t:{started}:R>)"
+        ))
+        .color(colors::random())
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
 
-        let embed = CreateEmbed::new()
-            .title(format!("{bot_name} Uptime"))
-            .description(format!(
-                "Started at <t:{started}:F>\nTotal Uptime: {humanized} (<t:{started}:R>)"
-            ))
-            .color(colors::random())
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
+/// List source file statistics.
+#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+async fn files(
+    ctx: Context<'_>,
+    #[description = "Show full per-file listing"] full: Option<bool>,
+) -> Result<(), Error> {
+    let s = &*FILE_STATS;
 
-    // ---- files ------------------------------------------------------------
-
-    async fn cmd_files(&self, ctx: &Context, msg: &Message) {
-        let s = self.stats();
-
-        // Build the per-file JSON dump (path -> line count).
+    let description = if full == Some(true) {
         let mut body = String::from("{\n");
         for (i, (path, lines)) in s.per_file.iter().enumerate() {
             let comma = if i + 1 < s.per_file.len() { "," } else { "" };
             body.push_str(&format!("    \"{path}\": {lines}{comma}\n"));
         }
         body.push('}');
-
-        // Embed descriptions cap at 4096 chars; fall back to a totals summary
-        // for very large trees.
-        let mut description = format!("```json\n{body}\n```");
-        if description.len() > 4000 {
-            description = format!(
+        let full_desc = format!("```json\n{body}\n```");
+        if full_desc.len() > 4000 {
+            format!(
                 "```json\n{{\n    \"files\": {},\n    \"lines\": {},\n    \"chars\": {}\n}}\n```",
                 s.files, s.lines, s.chars
-            );
-        }
-
-        let embed = CreateEmbed::new()
-            .title("File Lines")
-            .description(description)
-            .color(colors::TEAL)
-            .footer(CreateEmbedFooter::new(format!("{} files listed.", s.files)))
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    // ---- invite -----------------------------------------------------------
-
-    async fn cmd_invite(&self, ctx: &Context, msg: &Message) {
-        let bot_id = ctx.cache.current_user().id.get();
-        let url = format!(
-            "https://discord.com/api/oauth2/authorize?client_id={bot_id}\
-            &permissions=1636352650487&scope=applications.commands%20bot"
-        );
-        let embed = CreateEmbed::new()
-            .title("Invite Me")
-            .description(format!("[Invite]({url}) me to your server!"))
-            .color(colors::TEAL)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    // ---- charinfo ---------------------------------------------------------
-
-    async fn cmd_charinfo(&self, ctx: &Context, msg: &Message, arg: &str) {
-        if arg.is_empty() {
-            self.reply_embed(
-                ctx,
-                msg,
-                embeds::error_embed("Give me some characters to look up."),
             )
-            .await;
-            return;
-        }
-
-        // Cap the number of characters so the joined description stays under the
-        // 4096-char embed limit.
-        let lines: Vec<String> = arg
-            .chars()
-            .take(25)
-            .map(|ch| {
-                let cp = ch as u32;
-                let name = unicode_names2::name(ch)
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "Name not found.".to_string());
-                format!(
-                    "`\\U{cp:08x} - {ch}` [{name}](http://www.fileformat.info/info/unicode/char/{cp:x})"
-                )
-            })
-            .collect();
-
-        let embed = CreateEmbed::new()
-            .title("Charinfo")
-            .description(lines.join("\n"))
-            .color(colors::YELLOW)
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
-
-    // ---- permissions ------------------------------------------------------
-
-    async fn cmd_permissions(&self, ctx: &Context, msg: &Message, arg: &str) {
-        let Some(guild_id) = msg.guild_id else {
-            self.reply_embed(
-                ctx,
-                msg,
-                embeds::error_embed("This command can only be used in a server."),
-            )
-            .await;
-            return;
-        };
-
-        let target_id = if arg.is_empty() {
-            msg.author.id.get()
         } else {
-            match parse_user_id(arg) {
-                Some(id) => id,
-                None => {
-                    self.reply_embed(ctx, msg, embeds::error_embed("Member not found."))
-                        .await;
-                    return;
-                }
-            }
-        };
+            full_desc
+        }
+    } else {
+        format!(
+            "```json\n{{\n    \"files\": {},\n    \"lines\": {},\n    \"chars\": {}\n}}\n```",
+            s.files, s.lines, s.chars
+        )
+    };
 
-        let member = match guild_id.member(&ctx.http, UserId::new(target_id)).await {
+    let embed = CreateEmbed::new()
+        .title("File Lines")
+        .description(description)
+        .color(colors::TEAL)
+        .footer(CreateEmbedFooter::new(format!("{} files listed.", s.files)))
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Get the bot's invite link.
+#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+async fn invite(ctx: Context<'_>) -> Result<(), Error> {
+    let bot_id = ctx.serenity_context().cache.current_user().id.get();
+    let url = format!(
+        "https://discord.com/api/oauth2/authorize?client_id={bot_id}\
+        &permissions=1636352650487&scope=applications.commands%20bot"
+    );
+    let embed = CreateEmbed::new()
+        .title("Invite Me")
+        .description(format!("[Invite]({url}) me to your server!"))
+        .color(colors::TEAL)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Look up Unicode information for one or more characters.
+#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+async fn charinfo(
+    ctx: Context<'_>,
+    #[description = "Characters"]
+    #[rest]
+    characters: String,
+) -> Result<(), Error> {
+    let lines: Vec<String> = characters
+        .chars()
+        .take(25)
+        .map(|ch| {
+            let cp = ch as u32;
+            let name = unicode_names2::name(ch)
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "Name not found.".to_string());
+            format!(
+                "`\\U{cp:08x} - {ch}` [{name}](http://www.fileformat.info/info/unicode/char/{cp:x})"
+            )
+        })
+        .collect();
+
+    let embed = CreateEmbed::new()
+        .title("Charinfo")
+        .description(lines.join("\n"))
+        .color(colors::YELLOW)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Show permissions for a member (defaults to yourself).
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Info & Utility",
+    aliases("permissions")
+)]
+async fn perms(
+    ctx: Context<'_>,
+    #[description = "Member"] member: Option<Member>,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let sctx = ctx.serenity_context();
+
+    let member = match member {
+        Some(m) => m,
+        None => match guild_id.member(&sctx.http, ctx.author().id).await {
             Ok(m) => m,
-            Err(_) => {
-                self.reply_embed(ctx, msg, embeds::error_embed("Member not found."))
-                    .await;
-                return;
-            }
-        };
+            Err(_) => return send_error(ctx, "Could not resolve your member data.").await,
+        },
+    };
 
-        // Prefer the cache (GUILDS intent); fall back to a partial-guild fetch
-        // so the lookup still resolves on a cold cache.
-        let cached_perms: Option<Permissions> = ctx
-            .cache
-            .guild(guild_id)
-            .map(|g| g.member_permissions(&member));
-        let perms = match cached_perms {
-            Some(p) => p,
-            None => match guild_id.to_partial_guild(&ctx.http).await {
-                Ok(pg) => pg.member_permissions(&member),
-                Err(_) => {
-                    self.reply_embed(
-                        ctx,
-                        msg,
-                        embeds::error_embed("Could not resolve permissions."),
-                    )
-                    .await;
-                    return;
-                }
-            },
-        };
+    let cached_perms: Option<Permissions> = sctx
+        .cache
+        .guild(guild_id)
+        .map(|g| g.member_permissions(&member));
+    let perms = match cached_perms {
+        Some(p) => p,
+        None => match guild_id.to_partial_guild(&sctx.http).await {
+            Ok(pg) => pg.member_permissions(&member),
+            Err(_) => return send_error(ctx, "Could not resolve permissions.").await,
+        },
+    };
 
-        let names = perms.get_permission_names();
-        let description = if names.is_empty() {
-            "No permissions.".to_string()
-        } else {
-            names
-                .iter()
-                .map(|n| format!("\u{2022} {n}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+    let names = perms.get_permission_names();
+    let description = if names.is_empty() {
+        "No permissions.".to_string()
+    } else {
+        names
+            .iter()
+            .map(|n| format!("\u{2022} {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
-        let embed = CreateEmbed::new()
-            .title(format!("Permissions for {}", member.display_name()))
-            .description(description)
-            .color(colors::BLURPLE)
-            .footer(CreateEmbedFooter::new(format!(
-                "{} permission(s)",
-                names.len()
-            )))
-            .timestamp(Timestamp::now());
-        self.reply_embed(ctx, msg, embed).await;
-    }
+    let embed = CreateEmbed::new()
+        .title(format!("Permissions for {}", member.display_name()))
+        .description(description)
+        .color(colors::BLURPLE)
+        .footer(CreateEmbedFooter::new(format!(
+            "{} permission(s)",
+            names.len()
+        )))
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
 }
 
 // ---- free helpers ---------------------------------------------------------
 
 /// Walk `src/`, counting `.rs` files, total lines, total chars, and per-file
-/// line counts. Runs once; the result is cached in `BaseCog::stats`.
+/// line counts. Runs once; the result is cached in `FILE_STATS`.
 fn compute_file_stats() -> FileStats {
     let mut files = 0u64;
     let mut lines = 0u64;
