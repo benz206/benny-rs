@@ -27,9 +27,15 @@ use state::{AppState, start_latency_task};
 fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     use tracing_subscriber::prelude::*;
     std::fs::create_dir_all("logs").ok();
+    // Without a filter the registry emits everything at TRACE (gateway frames,
+    // TLS handshakes, per-socket reads), which floods the log and leaks data.
+    // Default to info; RUST_LOG still overrides.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let (file_writer, guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::never("logs", "benny.log"));
     tracing_subscriber::registry()
+        .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
@@ -48,6 +54,14 @@ fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
 async fn main() -> Result<()> {
     // Held until the end of main so the non-blocking file writer flushes on exit.
     let _log_guard = init_tracing();
+
+    // The dependency tree pulls in both rustls crypto providers (aws-lc-rs and
+    // ring), so rustls cannot pick a process-default on its own. Install one
+    // explicitly up front, or any TLS client relying on the default — notably
+    // the Lavalink client — panics on first use.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("install rustls crypto provider");
 
     let config = match load_config() {
         Ok(c) => c,
