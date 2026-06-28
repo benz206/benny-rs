@@ -43,6 +43,7 @@ pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     cmds.extend(crate::cogs::afk::commands());
     cmds.extend(crate::cogs::music::commands());
     cmds.extend(crate::cogs::dev::commands());
+    cmds.extend(crate::cogs::help::commands());
     cmds
 }
 

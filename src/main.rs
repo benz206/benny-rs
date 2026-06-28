@@ -207,6 +207,9 @@ async fn main() -> Result<()> {
                 info!("  Guilds: {}", ctx.cache.guilds().len());
                 info!("===========================================");
 
+                // Build the help menu from the registered command set.
+                cogs::help::init_help_index(&fw.options().commands);
+
                 if cfg!(debug_assertions) && let Some(gid) = support_guild {
                     poise::builtins::register_in_guild(
                         ctx,
