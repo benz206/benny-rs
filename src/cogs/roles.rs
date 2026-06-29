@@ -702,7 +702,12 @@ async fn bot_top_rank(
 ) -> (i64, Reverse<u64>) {
     let everyone = RoleId::new(guild_id.get());
     let bot_id = ctx.cache.current_user().id;
-    let default = role_rank(roles.get(&everyone).expect("@everyone always present"));
+    // @everyone (id == guild id) is normally always present; if a cold-cache
+    // fetch ever lacks it, fall back to its canonical rank instead of panicking.
+    let default = roles
+        .get(&everyone)
+        .map(role_rank)
+        .unwrap_or((0, Reverse(everyone.get())));
     match guild_id.member(&ctx.http, bot_id).await {
         Ok(bot) => top_role(&bot.roles, roles, everyone)
             .map(role_rank)

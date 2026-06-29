@@ -17,6 +17,8 @@ const AQUA: Colour = Colour::from_rgb(0x7F, 0xDB, 0xFF); // 0x7FDBFF
 const PINK: Colour = Colour::from_rgb(0xF0, 0x12, 0xBE); // 0xF012BE
 
 const DEFAULT_AFK_MESSAGE: &str = "I'm currently AFK.";
+/// Cap on a stored/echoed AFK reason (it is persisted and shown in an embed).
+const MAX_AFK_LEN: usize = 500;
 
 pub struct AfkCog {
     state: Arc<AppState>,
@@ -78,7 +80,9 @@ async fn afk(
     let state = &ctx.data().state;
     let author = ctx.author();
     let user_id = author.id.get();
-    let message = reason.unwrap_or_else(|| DEFAULT_AFK_MESSAGE.to_string());
+    let message = reason
+        .map(|r| crate::utils::format::truncate(&r, MAX_AFK_LEN).to_string())
+        .unwrap_or_else(|| DEFAULT_AFK_MESSAGE.to_string());
     let set_at = Utc::now().timestamp();
 
     state.afk_cache.insert(

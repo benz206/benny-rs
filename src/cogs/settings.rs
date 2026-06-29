@@ -2,7 +2,7 @@ use super::Cog;
 use crate::entities::{
     goodbye_config, logging, prefixes, sentinel_config, settings_users, welcome_config,
 };
-use crate::framework::{Context, Data, Error, send_embed, send_error};
+use crate::framework::{Context, Data, Error, send_embed, send_error, send_plain};
 use crate::state::AppState;
 use crate::utils::{colors, embeds, perms};
 use async_trait::async_trait;
@@ -420,8 +420,7 @@ async fn blacklist_add(
     )
     .exec(state.users_orm())
     .await;
-    ctx.say(format!("<@{user_id}> added to blacklist.")).await?;
-    Ok(())
+    send_plain(ctx, format!("<@{user_id}> added to blacklist.")).await
 }
 
 /// Remove a user from the bot blacklist (owner-only).
@@ -447,6 +446,5 @@ async fn blacklist_remove(
         .filter(settings_users::Column::UserId.eq(user_id))
         .exec(state.users_orm())
         .await;
-    ctx.say(format!("<@{user_id}> removed from blacklist.")).await?;
-    Ok(())
+    send_plain(ctx, format!("<@{user_id}> removed from blacklist.")).await
 }

@@ -2,7 +2,7 @@ use super::Cog;
 use crate::entities::{
     goodbye_config, sticky_roles, sticky_roles_config, welcome_autoroles, welcome_config,
 };
-use crate::framework::{Context, Data, Error, send_error};
+use crate::framework::{Context, Data, Error, send_error, send_plain};
 use crate::state::{AppState, GoodbyeConfig, WelcomeConfig};
 use crate::tagscript::{self, TagContext};
 use crate::utils::roles::{role_rank, top_role};
@@ -685,8 +685,7 @@ async fn autorole_set(
     )
     .exec(state.servers_orm())
     .await;
-    ctx.say(format!("Autorole set to <@&{role_id}>.")).await?;
-    Ok(())
+    send_plain(ctx, format!("Autorole set to <@&{role_id}>.")).await
 }
 
 /// Add a role to the autorole list.
@@ -744,8 +743,7 @@ async fn autorole_add(
         Err(DbErr::RecordNotInserted) => format!("<@&{role_id}> is already an autorole."),
         Err(_) => "Database error.".to_string(),
     };
-    ctx.say(text).await?;
-    Ok(())
+    send_plain(ctx, text).await
 }
 
 /// Remove a role from the autorole list.
@@ -773,8 +771,7 @@ async fn autorole_remove(
         Ok(r) if r.rows_affected > 0 => format!("Removed autorole <@&{role_id}>."),
         _ => format!("<@&{role_id}> was not an autorole."),
     };
-    ctx.say(text).await?;
-    Ok(())
+    send_plain(ctx, text).await
 }
 
 /// List all configured autoroles.
@@ -804,7 +801,7 @@ async fn autorole_list(ctx: Context<'_>) -> Result<(), Error> {
         .map(|m| format!("<@&{}>", m.role_id as u64))
         .collect::<Vec<_>>()
         .join(", ");
-    ctx.say(format!("Autoroles applied on join: {list}")).await?;
+    send_plain(ctx, format!("Autoroles applied on join: {list}")).await?;
     Ok(())
 }
 

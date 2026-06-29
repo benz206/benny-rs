@@ -78,11 +78,11 @@ impl Cog for RemindersCog {
         // Only the user who created the prompt may drive its controls — otherwise
         // anyone could confirm or cancel someone else's pending reminder. (`.map`
         // drops the DashMap guard before any await.)
-        if let Some(owner_id) = PENDING.get(&msg_id).map(|p| p.owner_id) {
-            if owner_id != interaction.user.id.get() {
-                ephemeral_error(ctx, interaction, "This isn't your reminder prompt.").await;
-                return;
-            }
+        if let Some(owner_id) = PENDING.get(&msg_id).map(|p| p.owner_id)
+            && owner_id != interaction.user.id.get()
+        {
+            ephemeral_error(ctx, interaction, "This isn't your reminder prompt.").await;
+            return;
         }
 
         match cid {

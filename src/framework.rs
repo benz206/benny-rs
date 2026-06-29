@@ -101,6 +101,18 @@ pub async fn send_error(ctx: Context<'_>, text: &str) -> Result<(), Error> {
     send_embed(ctx, error_embed(text)).await
 }
 
+/// Send a plain-text reply with all mentions suppressed. Use when the content
+/// echoes a user/role id (`<@id>` / `<@&id>`) that must not actually ping.
+pub async fn send_plain(ctx: Context<'_>, text: impl Into<String>) -> Result<(), Error> {
+    ctx.send(
+        poise::CreateReply::default()
+            .content(text.into())
+            .allowed_mentions(serenity::all::CreateAllowedMentions::new()),
+    )
+    .await?;
+    Ok(())
+}
+
 // ---- dynamic prefix --------------------------------------------------------
 
 /// Resolve the guild's active prefixes and strip the longest one that the
