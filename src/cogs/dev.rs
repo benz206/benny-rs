@@ -94,6 +94,7 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
         "dev_system",
         "dev_gitpull",
         "dev_servers",
+        "dev_suspicious",
         "dev_leave",
         "dev_close",
         "dev_redis",
@@ -110,7 +111,7 @@ async fn dev(ctx: Context<'_>) -> Result<(), Error> {
         .description(
             "**System:** `dev system` / `dev sys`\n\
              **Git:** `dev gitpull` / `dev pull`\n\
-             **Servers:** `dev servers`, `dev leave <guild_id>`\n\
+             **Servers:** `dev servers`, `dev suspicious [ratio]`, `dev leave <guild_id>`\n\
              **Redis:** `dev redis <get|set|search|info|cinfo|showall>`\n\
              **Logs:** `dev logs [n]`\n\
              **Process:** `dev uptime`, `dev ping`, `dev close`\n\
@@ -196,6 +197,83 @@ async fn dev_servers(ctx: Context<'_>) -> Result<(), Error> {
         .title(format!("{bot_name} Server List \u{2014} {count}"))
         .description(format!("```\n{lines}\n```"))
         .color(colors::CYAN)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// List servers whose bot-to-human ratio looks suspicious (owner-only).
+///
+/// Flags a guild when bots outnumber humans (ratio >= `threshold`, default
+/// 1.0) or when there are almost no humans next to a real bot cluster
+/// (`humans < 5 && bots >= 3`). Reuses the same `bot_ratio` the auto-leave
+/// policy uses; the ratio is computed from cached members.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "suspicious",
+    aliases("sus")
+)]
+async fn dev_suspicious(
+    ctx: Context<'_>,
+    #[description = "Override the bot:human ratio threshold (default 1.0)"] threshold: Option<f64>,
+) -> Result<(), Error> {
+    let thresh = threshold.unwrap_or(1.0).max(0.0);
+    let sctx = ctx.serenity_context();
+
+    // Gather flagged guilds into owned rows first; never hold a cache guild
+    // guard across the later await that sends the embed.
+    let mut rows: Vec<(String, u64, usize, usize, usize, f64)> = Vec::new();
+    for gid in sctx.cache.guilds() {
+        if let Some(g) = sctx.cache.guild(gid) {
+            let (bots, humans, total, _pct) = crate::cogs::events::bot_ratio(&g);
+            if total == 0 || bots == 0 {
+                continue;
+            }
+            let ratio = bots as f64 / humans.max(1) as f64;
+            if ratio >= thresh || (humans < 5 && bots >= 3) {
+                rows.push((g.name.to_string(), gid.get(), bots, humans, total, ratio));
+            }
+        }
+    }
+    rows.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
+
+    if rows.is_empty() {
+        let embed = CreateEmbed::new()
+            .title("No Suspicious Servers")
+            .description(format!(
+                "No servers at or above a bot:human ratio of `{thresh:.2}`."
+            ))
+            .color(colors::GREEN)
+            .timestamp(Timestamp::now());
+        return send_embed(ctx, embed).await;
+    }
+
+    let total_flagged = rows.len();
+    let mut lines = String::new();
+    let mut shown = 0usize;
+    for (name, gid, bots, humans, total, ratio) in &rows {
+        lines.push_str(&format!(
+            "\n{name} ({gid}) — {bots} bots / {humans} humans / {total} total (ratio {ratio:.2})"
+        ));
+        shown += 1;
+        if lines.len() > OUTPUT_LIMIT {
+            break;
+        }
+    }
+    let remaining = total_flagged - shown;
+    if remaining > 0 {
+        lines.push_str(&format!("\n... +{remaining} more"));
+    }
+
+    let embed = CreateEmbed::new()
+        .title(format!("Suspicious Servers — {total_flagged}"))
+        .description(format!("```{lines}\n```"))
+        .color(colors::RED)
+        .footer(CreateEmbedFooter::new(format!(
+            "ratio = bots / humans • threshold {thresh:.2}"
+        )))
         .timestamp(Timestamp::now());
     send_embed(ctx, embed).await
 }

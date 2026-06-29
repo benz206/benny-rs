@@ -232,7 +232,7 @@ impl Cog for EventsCog {
 /// Compute `(bots, humans, total, bot_percentage)` from a guild's loaded
 /// members. Percentage is `trunc((bots/total)*10000)/100`
 /// (two-decimal precision), and is 0.0 when no members are loaded.
-fn bot_ratio(guild: &Guild) -> (usize, usize, usize, f64) {
+pub(crate) fn bot_ratio(guild: &Guild) -> (usize, usize, usize, f64) {
     let total = guild.members.len();
     let bots = guild.members.values().filter(|m| m.user.bot).count();
     let humans = total.saturating_sub(bots);
