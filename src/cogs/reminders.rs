@@ -204,25 +204,7 @@ async fn remind(
     #[rest]
     message: String,
 ) -> Result<(), Error> {
-    let now = Utc::now();
-    let state = &ctx.data().state;
-    let user_id = ctx.author().id.get() as i64;
-    let text = message.trim().to_string();
-
-    if text.is_empty() {
-        return send_error(ctx, "Please provide a reminder message.").await;
-    }
-
-    match parse_when(&when, now).filter(|dt| *dt > now) {
-        Some(dt) => {
-            let ts = dt.timestamp();
-            match insert_reminder(state, user_id, &text, ts).await {
-                Ok(id) => send_embed(ctx, created_embed(&text, ts, id)).await,
-                Err(e) => send_error(ctx, e).await,
-            }
-        }
-        None => show_interactive(ctx, &text, now).await,
-    }
+    create_reminder(ctx, when, message).await
 }
 
 /// List and manage your reminders.
@@ -231,10 +213,22 @@ async fn remind(
     prefix_command,
     category = "Reminders",
     aliases("reminder"),
-    subcommands("reminders_list", "reminders_delete")
+    subcommands("reminders_create", "reminders_list", "reminders_delete")
 )]
 async fn reminders(ctx: Context<'_>) -> Result<(), Error> {
     list_user_reminders(ctx).await
+}
+
+/// Create a reminder. If the time can't be parsed a time-picker is shown instead.
+#[poise::command(slash_command, prefix_command, rename = "create", aliases("add"))]
+async fn reminders_create(
+    ctx: Context<'_>,
+    #[description = "When, e.g. 1h30m"] when: String,
+    #[description = "Message"]
+    #[rest]
+    message: String,
+) -> Result<(), Error> {
+    create_reminder(ctx, when, message).await
 }
 
 /// List all your active reminders.
@@ -293,6 +287,29 @@ async fn reminders_delete(
 }
 
 // ---- shared helpers --------------------------------------------------------
+
+/// Shared body for `remind` and `reminders create`.
+async fn create_reminder(ctx: Context<'_>, when: String, message: String) -> Result<(), Error> {
+    let now = Utc::now();
+    let state = &ctx.data().state;
+    let user_id = ctx.author().id.get() as i64;
+    let text = message.trim().to_string();
+
+    if text.is_empty() {
+        return send_error(ctx, "Please provide a reminder message.").await;
+    }
+
+    match parse_when(&when, now).filter(|dt| *dt > now) {
+        Some(dt) => {
+            let ts = dt.timestamp();
+            match insert_reminder(state, user_id, &text, ts).await {
+                Ok(id) => send_embed(ctx, created_embed(&text, ts, id)).await,
+                Err(e) => send_error(ctx, e).await,
+            }
+        }
+        None => show_interactive(ctx, &text, now).await,
+    }
+}
 
 /// Fetch and display the caller's active reminders. Shared between the
 /// `reminders` parent body and the `reminders list` subcommand.
