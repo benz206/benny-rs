@@ -198,10 +198,6 @@ impl AppState {
     pub fn in_guild(&self, guild_id: u64) -> bool {
         self.guild_set.contains_key(&guild_id)
     }
-    /// The bot's own user id, if `ready` has fired.
-    pub fn bot_id(&self) -> Option<u64> {
-        self.bot_id.get().copied()
-    }
     /// The Lavalink client, if it has been initialized at `ready`.
     pub fn lavalink(&self) -> Option<lavalink_rs::client::LavalinkClient> {
         self.lavalink.get().cloned()
