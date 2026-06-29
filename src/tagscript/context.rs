@@ -30,6 +30,9 @@ pub struct TagContext {
     pub vars: HashMap<String, String>,
     // Transient engine state (reset each run); set by the {break} block.
     pub break_body: Option<String>,
+    // Transient work counter (reset each run): number of blocks dispatched so
+    // far, used to bound total interpreter work. See `tagscript::resolve`.
+    pub nodes: u32,
 }
 
 impl TagContext {
