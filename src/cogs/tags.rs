@@ -3,6 +3,7 @@ use crate::entities::tags;
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::{AppState, Tag};
 use crate::tagscript::{self, TagContext, TagOutput};
+use crate::utils::ratelimit::RateLimiter;
 use crate::utils::{colors, embeds};
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -23,11 +24,18 @@ use std::time::{Duration, Instant};
 const RESERVED_NAMES: &[&str] = &["tag", "tagtest", "tt", "playground", "testtag"];
 const MAX_TAG_NAME_LEN: usize = 32;
 const MAX_TAG_CONTENT_LEN: usize = 2000;
+/// Cap on the per-`{cd}` cooldown tracker so it can't grow without bound.
+const MAX_COOLDOWN_KEYS: usize = 4096;
+/// Light per-user throttle on dynamic tag invocation, independent of the
+/// author opt-in `{cd}` block.
+const INVOKE_INTERVAL: Duration = Duration::from_millis(1500);
 
 pub struct TagsCog {
     state: Arc<AppState>,
     /// Per-`{cd}` cooldown tracker, keyed by `"{guild}:{tag}:{bucket}"`.
     cooldowns: DashMap<String, Instant>,
+    /// Per-`(guild, user)` throttle on tag invocation.
+    invoke_limiter: RateLimiter<(u64, u64)>,
 }
 
 impl TagsCog {
@@ -35,6 +43,7 @@ impl TagsCog {
         Arc::new(Self {
             state,
             cooldowns: DashMap::new(),
+            invoke_limiter: RateLimiter::new(8192),
         })
     }
 }
@@ -102,6 +111,15 @@ impl Cog for TagsCog {
             .map(|gt| gt.contains_key(&tag_name))
             .unwrap_or(false);
         if exists {
+            // Light per-user throttle so a stored tag can't be spam-invoked
+            // (separate from the author opt-in `{cd}` block).
+            if self
+                .invoke_limiter
+                .check((guild_id, msg.author.id.get()), INVOKE_INTERVAL)
+                .is_some()
+            {
+                return;
+            }
             self.invoke_tag(ctx, msg, guild_id, &tag_name, rest).await;
         }
     }
@@ -730,7 +748,12 @@ impl TagsCog {
                     return;
                 }
             }
-            self.cooldowns.insert(key, Instant::now());
+            crate::utils::cache::bounded_insert(
+                &self.cooldowns,
+                key,
+                Instant::now(),
+                MAX_COOLDOWN_KEYS,
+            );
         }
 
         self.send_output_message(ctx, msg, &output).await;

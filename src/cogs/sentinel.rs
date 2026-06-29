@@ -2,9 +2,11 @@ use super::Cog;
 use crate::entities::{sentinel_config, sentinels_decancer};
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::{AppState, SentinelConfig};
+use crate::utils::ratelimit::RateLimiter;
 use crate::utils::{colors, embeds, parse, perms};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::time::Duration;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
@@ -48,13 +50,25 @@ static DELETE_FLAGS: LazyLock<DashMap<u64, bool>> = LazyLock::new(DashMap::new);
 /// Per-guild decancer config, hydrated from the DB at ready.
 static DECANCER_CACHE: LazyLock<DashMap<u64, DecancerConfig>> = LazyLock::new(DashMap::new);
 
+/// Skip toxicity scanning of messages longer than this (don't ship arbitrary
+/// size to the external API).
+const MAX_SCAN_CHARS: usize = 2000;
+/// Minimum interval between toxicity API calls per channel, so a spam flood
+/// can't fan out to one outbound HTTP request per message.
+const SCAN_INTERVAL: Duration = Duration::from_secs(2);
+
 pub struct SentinelCog {
     state: Arc<AppState>,
+    /// Per-channel throttle on outbound toxicity API calls.
+    api_limiter: RateLimiter<u64>,
 }
 
 impl SentinelCog {
     pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self { state })
+        Arc::new(Self {
+            state,
+            api_limiter: RateLimiter::new(4096),
+        })
     }
 }
 
@@ -114,8 +128,10 @@ impl Cog for SentinelCog {
             return;
         }
 
-        // Only scan sufficiently long messages in sentinel-enabled guilds.
-        if msg.content.chars().count() <= 25 {
+        // Only scan messages in a useful size band: long enough to matter, but
+        // not so long we ship an unbounded payload to the external API.
+        let char_count = msg.content.chars().count();
+        if char_count <= 25 || char_count > MAX_SCAN_CHARS {
             return;
         }
         let config = match self.state.sentinel_cache.get(&guild_id) {
@@ -125,6 +141,15 @@ impl Cog for SentinelCog {
         let Some(api_url) = self.state.config.sentiment_api_url.clone() else {
             return;
         };
+        // Throttle outbound API calls per channel to bound the fan-out under a
+        // message flood (scanning resumes once the window passes).
+        if self
+            .api_limiter
+            .check(msg.channel_id.get(), SCAN_INTERVAL)
+            .is_some()
+        {
+            return;
+        }
         self.check_toxicity(ctx, msg, guild_id, &config, &api_url)
             .await;
     }
