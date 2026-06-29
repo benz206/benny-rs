@@ -5,16 +5,18 @@ use crate::utils::{colors, format};
 use async_trait::async_trait;
 use serenity::all::{
     ButtonStyle, ChannelType, Colour, ComponentInteraction, CreateActionRow, CreateButton,
-    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse, Guild, GuildId,
-    Permissions, PremiumTier, Role, RoleId, Timestamp, UserPublicFlags,
+    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse,
+    CreateInteractionResponseMessage, Guild, GuildId, Permissions, PremiumTier, Role, RoleId,
+    Timestamp, UserPublicFlags,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// custom_id of the avatar card's delete button. All of this cog's component
-/// ids share the `info:` prefix so `on_component` can early-return for ids it
-/// does not own.
-const AVATAR_DELETE_ID: &str = "info:avatar:delete";
+/// custom_id prefix for the avatar card's delete button. All of this cog's
+/// component ids share the `info:` prefix so `on_component` can early-return for
+/// ids it does not own; the invoking user's id is appended here so only they can
+/// delete the card.
+const AVATAR_DELETE_PREFIX: &str = "info:avatar:delete:";
 
 /// How many role mentions to list in a member card before truncating.
 const MAX_ROLES_SHOWN: usize = 20;
@@ -35,7 +37,26 @@ impl Cog for InfoCog {
         if !interaction.data.custom_id.starts_with("info:") {
             return;
         }
-        if interaction.data.custom_id == AVATAR_DELETE_ID {
+        if let Some(owner) = interaction
+            .data
+            .custom_id
+            .strip_prefix(AVATAR_DELETE_PREFIX)
+            .and_then(|id| id.parse::<u64>().ok())
+        {
+            // Only the user who requested the card may delete it.
+            if owner != interaction.user.id.get() {
+                let _ = interaction
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .ephemeral(true)
+                                .content("This isn't your avatar card."),
+                        ),
+                    )
+                    .await;
+                return;
+            }
             // Acknowledge so Discord does not show "interaction failed", then
             // remove the avatar card.
             let _ = interaction
@@ -217,7 +238,7 @@ async fn avatar(
         .image(avatar_url)
         .color(color)
         .timestamp(Timestamp::now());
-    let button = CreateButton::new(AVATAR_DELETE_ID)
+    let button = CreateButton::new(format!("{AVATAR_DELETE_PREFIX}{}", ctx.author().id.get()))
         .label("Delete")
         .style(ButtonStyle::Danger)
         .emoji('🗑');

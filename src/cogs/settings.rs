@@ -4,13 +4,13 @@ use crate::entities::{
 };
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::AppState;
-use crate::utils::{colors, embeds};
+use crate::utils::{colors, embeds, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
     ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
-    CreateInteractionResponse, CreateInteractionResponseMessage, Timestamp,
+    CreateInteractionResponse, CreateInteractionResponseMessage, GuildId, Permissions, Timestamp,
 };
 use std::sync::Arc;
 
@@ -99,6 +99,28 @@ impl Cog for SettingsCog {
 
         let response = match action {
             "confirm" => {
+                // Re-check at confirm time: the author may have lost Manage
+                // Server between invoking and confirming this destructive wipe.
+                if !perms::has_perm(
+                    ctx,
+                    GuildId::new(guild_id),
+                    interaction.user.id.get(),
+                    Permissions::MANAGE_GUILD,
+                )
+                .await
+                {
+                    let _ = interaction
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new().ephemeral(true).content(
+                                    "You need the **Manage Server** permission to reset settings.",
+                                ),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
                 self.do_reset(guild_id).await;
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()

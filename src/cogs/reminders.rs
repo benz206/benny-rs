@@ -49,6 +49,8 @@ const PRESETS: [(i64, &str); 17] = [
 struct PendingReminder {
     content: String,
     chosen_time: Option<i64>,
+    /// The user who created the prompt — only they may drive its controls.
+    owner_id: u64,
 }
 
 /// Module-level session map shared between command fns and the `on_component` hook.
@@ -72,6 +74,16 @@ impl Cog for RemindersCog {
             return;
         }
         let msg_id = interaction.message.id.get();
+
+        // Only the user who created the prompt may drive its controls — otherwise
+        // anyone could confirm or cancel someone else's pending reminder. (`.map`
+        // drops the DashMap guard before any await.)
+        if let Some(owner_id) = PENDING.get(&msg_id).map(|p| p.owner_id) {
+            if owner_id != interaction.user.id.get() {
+                ephemeral_error(ctx, interaction, "This isn't your reminder prompt.").await;
+                return;
+            }
+        }
 
         match cid {
             "rem:select" => {
@@ -373,6 +385,7 @@ async fn show_interactive(ctx: Context<'_>, text: &str, now: DateTime<Utc>) -> R
         PendingReminder {
             content: text.to_string(),
             chosen_time: None,
+            owner_id: ctx.author().id.get(),
         },
         1000,
     );
