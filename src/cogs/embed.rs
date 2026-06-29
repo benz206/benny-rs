@@ -303,6 +303,9 @@ struct Builder {
 // `on_component`/`on_modal` hooks.
 
 static BUILDERS: LazyLock<DashMap<u64, Builder>> = LazyLock::new(DashMap::new);
+/// Cap on concurrent embed-builder sessions (bounds memory if sessions are
+/// abandoned without Cancel/Complete).
+const MAX_BUILDERS: usize = 500;
 static TEXT_SESSIONS: LazyLock<DashMap<u64, EmbedData>> = LazyLock::new(DashMap::new);
 
 pub struct EmbedCog {
@@ -763,12 +766,16 @@ async fn embed_new(ctx: Context<'_>) -> Result<(), Error> {
         .send(poise::CreateReply::default().embed(embed).components(components))
         .await?;
     let sent = handle.message().await?;
-    BUILDERS.insert(
+    // Cap the live-session map so abandoned builders can't leak memory over a
+    // long uptime (every other interactive map here is bounded the same way).
+    crate::utils::cache::bounded_insert(
+        &BUILDERS,
         sent.id.get(),
         Builder {
             data,
             owner_id: ctx.author().id.get(),
         },
+        MAX_BUILDERS,
     );
     Ok(())
 }

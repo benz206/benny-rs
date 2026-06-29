@@ -9,7 +9,7 @@ use crate::utils::roles::{role_rank, top_role};
 use crate::utils::{colors, format, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use serde_json::Value;
 use serenity::all::{
     ButtonStyle, Channel, ChannelId, Colour, ComponentInteraction, CreateActionRow,
@@ -24,6 +24,9 @@ use std::sync::Arc;
 /// custom_id namespace for this cog's interactive components. Every component
 /// handled here is prefixed with this; `on_component` early-returns otherwise.
 const CID_PREFIX: &str = "wel:";
+/// Cap on autoroles per guild — each one is an extra `add_member_role` call on
+/// every join, so the list must be bounded.
+const MAX_AUTOROLES: usize = 25;
 
 pub struct WelcomeCog {
     state: Arc<AppState>,
@@ -705,6 +708,21 @@ async fn autorole_add(
 
     if let Some(err) = autorole_block(sctx, guild_id, ctx.author().id.get(), role_id).await {
         return send_error(ctx, &err).await;
+    }
+
+    // Cap the list: every stored autorole is one extra `add_member_role` HTTP
+    // call on every join, so an unbounded list amplifies per-join work.
+    let count = welcome_autoroles::Entity::find()
+        .filter(welcome_autoroles::Column::GuildId.eq(guild_id as i64))
+        .count(state.servers_orm())
+        .await
+        .unwrap_or(0);
+    if count as usize >= MAX_AUTOROLES {
+        return send_error(
+            ctx,
+            &format!("You can have at most {MAX_AUTOROLES} autoroles."),
+        )
+        .await;
     }
 
     let res = welcome_autoroles::Entity::insert(welcome_autoroles::ActiveModel {
