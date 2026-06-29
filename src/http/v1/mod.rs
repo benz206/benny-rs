@@ -7,7 +7,9 @@
 //!   caches mirror). Writes update the DB **and** the corresponding cache in the
 //!   same handler, exactly as the cogs do — see `config.rs`.
 
+mod cases;
 mod config;
+mod tags;
 
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
@@ -23,6 +25,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/guilds", get(list_guilds))
         .route("/guilds/{gid}", get(overview))
         .merge(config::router())
+        .merge(tags::router())
+        .merge(cases::router())
 }
 
 // ---- shared id helpers -----------------------------------------------------
