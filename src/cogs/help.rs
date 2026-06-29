@@ -4,7 +4,7 @@ use crate::state::AppState;
 use crate::utils::embeds::error_embed;
 use dashmap::DashMap;
 use serenity::all::{
-    ButtonStyle, ChannelId, Colour, ComponentInteraction, ComponentInteractionDataKind,
+    ButtonStyle, Colour, ComponentInteraction, ComponentInteractionDataKind,
     CreateActionRow, CreateButton, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
     CreateSelectMenuKind, CreateSelectMenuOption, ReactionType, Timestamp,

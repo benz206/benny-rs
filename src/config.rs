@@ -59,7 +59,7 @@ fn default_lavalink_password() -> String {
     "youshallnotpass".to_string()
 }
 fn default_search_source() -> String {
-    "ytsearch".to_string()
+    "scsearch".to_string()
 }
 
 pub fn load_config() -> Result<Arc<BotConfig>> {

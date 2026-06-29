@@ -314,7 +314,7 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
         "welcome_disable"
     )
 )]
-async fn welcome(ctx: Context<'_>) -> Result<(), Error> {
+async fn welcome(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
@@ -477,7 +477,7 @@ async fn welcome_disable(ctx: Context<'_>) -> Result<(), Error> {
         "goodbye_disable"
     )
 )]
-async fn goodbye(ctx: Context<'_>) -> Result<(), Error> {
+async fn goodbye(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
@@ -639,7 +639,7 @@ async fn goodbye_disable(ctx: Context<'_>) -> Result<(), Error> {
         "autorole_clear"
     )
 )]
-async fn autorole(ctx: Context<'_>) -> Result<(), Error> {
+async fn autorole(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
@@ -821,7 +821,7 @@ async fn autorole_clear(ctx: Context<'_>) -> Result<(), Error> {
     subcommand_required,
     subcommands("stickyrole_enable", "stickyrole_disable")
 )]
-async fn stickyrole(ctx: Context<'_>) -> Result<(), Error> {
+async fn stickyrole(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 

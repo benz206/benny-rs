@@ -3,7 +3,7 @@
 //! Voice joining is done by forwarding a raw VOICE_STATE_UPDATE (gateway opcode 4)
 //! through serenity's shard, then asking `lavalink-rs` for the resulting
 //! connection info (it is fed the `voice_server_update` / `voice_state_update`
-//! events from `main.rs`). Commands are dispatched from `on_command`.
+//! events from `main.rs`). Commands are poise commands (prefix + slash).
 
 use crate::cogs::Cog;
 use crate::framework::{Context, Data, Error, send_embed, send_error};

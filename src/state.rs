@@ -62,17 +62,6 @@ pub struct LoggingConfig {
     pub enabled: bool,
 }
 
-/// A parsed prefix-command invocation. All fields borrow `msg.content`, so the
-/// matched prefix, command word, and argument remainder are zero-copy slices.
-pub struct CommandInvocation<'a> {
-    /// The prefix that matched (a slice of the message content).
-    pub prefix: &'a str,
-    /// First whitespace-delimited token after the prefix (the command name).
-    pub command: &'a str,
-    /// Everything after the command word, trimmed (may be empty).
-    pub args: &'a str,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<BotConfig>,
@@ -174,28 +163,14 @@ impl AppState {
         }
         vec![self.config.prefix.clone()]
     }
-    /// Parse a message into a prefix-command invocation, resolving the guild's
-    /// active prefixes. The longest matching prefix wins so overlapping
-    /// prefixes (e.g. `!` and `!!`) resolve unambiguously. Returns `None` when
-    /// no prefix matches or there is no command word after it.
-    pub fn parse_command<'a>(&self, msg: &'a Message) -> Option<CommandInvocation<'a>> {
+    /// Whether the message begins with one of the guild's active prefixes.
+    /// Used by passive scanners (e.g. Sentinel) to skip command messages.
+    /// poise handles actual command parsing/dispatch.
+    pub fn starts_with_prefix(&self, msg: &Message) -> bool {
         let content = msg.content.trim_start();
-        let prefixes = self.guild_prefixes(msg.guild_id.map(|g| g.get()));
-        let plen = prefixes
+        self.guild_prefixes(msg.guild_id.map(|g| g.get()))
             .iter()
-            .filter(|p| !p.is_empty() && content.starts_with(p.as_str()))
-            .map(|p| p.len())
-            .max()?;
-        let prefix = &content[..plen];
-        let body = content[plen..].trim_start();
-        let mut it = body.splitn(2, char::is_whitespace);
-        let command = it.next().filter(|c| !c.is_empty())?;
-        let args = it.next().unwrap_or("").trim();
-        Some(CommandInvocation {
-            prefix,
-            command,
-            args,
-        })
+            .any(|p| !p.is_empty() && content.starts_with(p.as_str()))
     }
     pub fn latency(&self) -> Arc<Mutex<Vec<u64>>> {
         self.latency_ms.clone()

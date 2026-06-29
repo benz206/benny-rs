@@ -110,7 +110,7 @@ impl Cog for SentinelCog {
         };
 
         // Never scan prefix commands for toxicity.
-        if self.state.parse_command(msg).is_some() {
+        if self.state.starts_with_prefix(msg) {
             return;
         }
 

@@ -27,6 +27,7 @@ pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     let mut cmds = Vec::new();
     cmds.extend(crate::cogs::base::commands());
     cmds.extend(crate::cogs::info::commands());
+    cmds.extend(crate::cogs::tags::commands());
     cmds.extend(crate::cogs::moderation::commands());
     cmds.extend(crate::cogs::prefixes::commands());
     cmds.extend(crate::cogs::settings::commands());
@@ -141,7 +142,7 @@ pub async fn event_handler(
         }
         FullEvent::GuildCreate { guild, .. } => cogs.dispatch_guild_create(ctx, guild).await,
         FullEvent::GuildDelete { incomplete, full } => {
-            cogs.dispatch_guild_delete(ctx, incomplete.clone(), full.clone())
+            cogs.dispatch_guild_delete(ctx, *incomplete, full.clone())
                 .await
         }
         FullEvent::GuildBanAddition {

@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
 
     // Cogs own the gateway-event hooks (AFK, sentinel, logging, welcome, ...);
     // poise owns command dispatch. Both share the same `Arc<AppState>`.
-    let mut manager = CogManager::new(app_state.clone());
+    let mut manager = CogManager::new();
     manager.register(BaseCog::new(app_state.clone()));
     manager.register(PrefixesCog::new(app_state.clone()));
     manager.register(AfkCog::new(app_state.clone()));

@@ -1,5 +1,6 @@
 use super::Cog;
 use crate::entities::tags;
+use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::{AppState, Tag};
 use crate::tagscript::{self, TagContext, TagOutput};
 use crate::utils::{colors, embeds};
@@ -8,9 +9,9 @@ use dashmap::DashMap;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    ChannelId, Colour, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedAuthor,
+    ChannelId, Colour, CreateAllowedMentions, CreateEmbed, CreateEmbedAuthor,
     CreateEmbedFooter, CreateMessage, GuildId, Message, Permissions, ReactionType, RoleId,
-    Timestamp,
+    Timestamp, UserId,
 };
 use serenity::prelude::Mentionable;
 use std::collections::HashMap;
@@ -40,7 +41,7 @@ impl TagsCog {
 
 #[async_trait]
 impl Cog for TagsCog {
-    async fn on_ready(&self, _ctx: &Context) {
+    async fn on_ready(&self, _ctx: &serenity::all::Context) {
         // Load all tags from DB into tag_cache
         let rows = tags::Entity::find()
             .all(self.state.servers_orm())
@@ -69,7 +70,7 @@ impl Cog for TagsCog {
         tracing::info!("Tag cache loaded ({count} tags)");
     }
 
-    async fn on_message(&self, ctx: &Context, msg: &Message) {
+    async fn on_message(&self, ctx: &serenity::all::Context, msg: &Message) {
         if msg.author.bot {
             return;
         }
@@ -90,19 +91,7 @@ impl Cog for TagsCog {
         };
         let rest = it.next().unwrap_or("").trim();
 
-        // Tag management group.
-        if first_word == "tag" {
-            self.handle_tag_command(ctx, msg, guild_id, rest).await;
-            return;
-        }
-
-        // Playground / test command — runs TagScript without saving.
-        if matches!(first_word, "tagtest" | "tt" | "playground" | "testtag") {
-            self.cmd_test(ctx, msg, rest).await;
-            return;
-        }
-
-        // Otherwise treat an unmatched first word as a possible tag invocation.
+        // Treat an unmatched first word as a possible tag invocation.
         // Names are stored lower-cased, so match case-insensitively (otherwise
         // `Hello` could never invoke the stored `hello`).
         let tag_name = first_word.to_lowercase();
@@ -118,10 +107,484 @@ impl Cog for TagsCog {
     }
 }
 
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![tag(), tagtest()]
+}
+
+// ---- poise commands --------------------------------------------------------
+
+/// Tag management commands.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    category = "Tags",
+    subcommand_required,
+    subcommands("tag_create", "tag_edit", "tag_delete", "tag_list", "tag_info", "tag_raw"),
+)]
+async fn tag(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Create a new tag.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    rename = "create",
+    aliases("add"),
+    category = "Tags",
+)]
+async fn tag_create(
+    ctx: Context<'_>,
+    #[description = "Name"] name: String,
+    #[description = "Content"]
+    #[rest]
+    content: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+    let name = name.to_lowercase();
+
+    if RESERVED_NAMES.contains(&name.as_str()) {
+        return send_error(
+            ctx,
+            &format!("`{name}` is reserved and can't be used as a tag name."),
+        )
+        .await;
+    }
+    if name.chars().count() > MAX_TAG_NAME_LEN
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
+        return send_error(
+            ctx,
+            &format!(
+                "Tag names must be ≤{MAX_TAG_NAME_LEN} characters and contain only letters, numbers, `_` or `-`."
+            ),
+        )
+        .await;
+    }
+
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return send_error(ctx, "Please provide tag content.").await;
+    }
+    if content.chars().count() > MAX_TAG_CONTENT_LEN {
+        return send_error(
+            ctx,
+            &format!("Tag content must be ≤{MAX_TAG_CONTENT_LEN} characters."),
+        )
+        .await;
+    }
+
+    let owner_id = ctx.author().id.get() as i64;
+    let created_at = chrono::Utc::now().timestamp();
+
+    let result = tags::Entity::insert(tags::ActiveModel {
+        guild_id: Set(guild_id as i64),
+        name: Set(name.clone()),
+        content: Set(content.clone()),
+        owner_id: Set(owner_id),
+        uses: Set(0),
+        created_at: Set(created_at),
+    })
+    .on_conflict(
+        OnConflict::columns([tags::Column::GuildId, tags::Column::Name])
+            .do_nothing()
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+
+    match result {
+        Ok(_) => {
+            let len = content.chars().count();
+            state
+                .tag_cache
+                .entry(guild_id)
+                .or_insert_with(HashMap::new)
+                .insert(
+                    name.clone(),
+                    Tag {
+                        name: name.clone(),
+                        content,
+                        owner_id,
+                        uses: 0,
+                        created_at,
+                    },
+                );
+            let embed = embeds::success_embed(
+                "Success",
+                &format!("Created tag `{name}`, length `{len}`"),
+            );
+            send_embed(ctx, embed).await
+        }
+        Err(DbErr::RecordNotInserted) => {
+            send_error(
+                ctx,
+                &format!(
+                    "Tag `{name}` already exists. Use `tag edit {name} <content>` to edit it."
+                ),
+            )
+            .await
+        }
+        Err(e) => {
+            tracing::error!(error = ?e, "failed to create tag");
+            send_error(ctx, "Database error.").await
+        }
+    }
+}
+
+/// Edit an existing tag's content.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    rename = "edit",
+    category = "Tags",
+)]
+async fn tag_edit(
+    ctx: Context<'_>,
+    #[description = "Name"] name: String,
+    #[description = "Content"]
+    #[rest]
+    content: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let sctx = ctx.serenity_context();
+    let state = &ctx.data().state;
+    let name = name.to_lowercase();
+    let content = content.trim().to_string();
+
+    if content.is_empty() {
+        return send_error(ctx, "Please provide new content.").await;
+    }
+    if content.chars().count() > MAX_TAG_CONTENT_LEN {
+        return send_error(
+            ctx,
+            &format!("Tag content must be ≤{MAX_TAG_CONTENT_LEN} characters."),
+        )
+        .await;
+    }
+
+    let owner_id = state
+        .tag_cache
+        .get(&guild_id)
+        .and_then(|gt| gt.get(&name).map(|t| t.owner_id));
+
+    let owner_id = match owner_id {
+        None => return send_error(ctx, &format!("Tag `{name}` not found.")).await,
+        Some(id) => id,
+    };
+
+    if owner_id != ctx.author().id.get() as i64
+        && !member_can_manage(sctx, state, guild_id, ctx.author().id.get()).await
+    {
+        return send_error(
+            ctx,
+            "You can only edit tags you own (or need the Manage Server permission).",
+        )
+        .await;
+    }
+
+    let len = content.chars().count();
+    let _ = tags::Entity::update_many()
+        .col_expr(tags::Column::Content, Expr::value(content.clone()))
+        .filter(tags::Column::GuildId.eq(guild_id as i64))
+        .filter(tags::Column::Name.eq(name.as_str()))
+        .exec(state.servers_orm())
+        .await;
+    if let Some(mut gt) = state.tag_cache.get_mut(&guild_id) {
+        if let Some(t) = gt.get_mut(&name) {
+            t.content = content;
+        }
+    }
+
+    let embed = embeds::success_embed(
+        "Success",
+        &format!("Edited tag `{name}`, new length `{len}`"),
+    );
+    send_embed(ctx, embed).await
+}
+
+/// Delete a tag.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    rename = "delete",
+    aliases("del", "remove"),
+    category = "Tags",
+)]
+async fn tag_delete(
+    ctx: Context<'_>,
+    #[description = "Name"] name: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let sctx = ctx.serenity_context();
+    let state = &ctx.data().state;
+    let name = name.trim().to_lowercase();
+
+    let owner_id = state
+        .tag_cache
+        .get(&guild_id)
+        .and_then(|gt| gt.get(&name).map(|t| t.owner_id));
+
+    let owner_id = match owner_id {
+        None => return send_error(ctx, &format!("Tag `{name}` not found.")).await,
+        Some(id) => id,
+    };
+
+    if owner_id != ctx.author().id.get() as i64
+        && !member_can_manage(sctx, state, guild_id, ctx.author().id.get()).await
+    {
+        return send_error(
+            ctx,
+            "You can only delete tags you own (or need the Manage Server permission).",
+        )
+        .await;
+    }
+
+    let _ = tags::Entity::delete_many()
+        .filter(tags::Column::GuildId.eq(guild_id as i64))
+        .filter(tags::Column::Name.eq(name.as_str()))
+        .exec(state.servers_orm())
+        .await;
+    if let Some(mut gt) = state.tag_cache.get_mut(&guild_id) {
+        gt.remove(&name);
+    }
+
+    let embed = CreateEmbed::new()
+        .title("Success")
+        .description(format!("Removed tag `{name}`"))
+        .color(colors::RED)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// List all tags in this server.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    rename = "list",
+    category = "Tags",
+)]
+async fn tag_list(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let sctx = ctx.serenity_context();
+    let state = &ctx.data().state;
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(gt) = state.tag_cache.get(&guild_id) {
+        let mut names: Vec<String> = gt.keys().cloned().collect();
+        names.sort();
+        for n in names {
+            if let Some(t) = gt.get(&n) {
+                lines.push(format!(
+                    "{} - Uses: {} Length: {}",
+                    t.name,
+                    t.uses,
+                    t.content.chars().count()
+                ));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return send_error(ctx, "No tags in this server.").await;
+    }
+
+    let server_name = sctx
+        .cache
+        .guild(GuildId::new(guild_id))
+        .map(|g| g.name.clone())
+        .unwrap_or_else(|| "Server".to_string());
+    let vis = lines.join("\n");
+    let embed = CreateEmbed::new()
+        .title(format!("{server_name} Tags"))
+        .description(format!("```yaml\n{vis}\n```"))
+        .color(colors::PINK)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Show info about a tag.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    rename = "info",
+    category = "Tags",
+)]
+async fn tag_info(
+    ctx: Context<'_>,
+    #[description = "Name"] name: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+    let name = name.trim().to_lowercase();
+
+    let tag = state
+        .tag_cache
+        .get(&guild_id)
+        .and_then(|gt| gt.get(&name).cloned());
+
+    match tag {
+        None => send_error(ctx, &format!("Tag `{name}` not found.")).await,
+        Some(t) => {
+            let created = chrono::DateTime::from_timestamp(t.created_at, 0)
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let embed = CreateEmbed::new()
+                .title(format!("Tag: {}", t.name))
+                .color(colors::ORANGE)
+                .field("Owner", format!("<@{}>", t.owner_id), true)
+                .field("Uses", t.uses.to_string(), true)
+                .field("Length", t.content.chars().count().to_string(), true)
+                .field("Created", created, true)
+                .timestamp(Timestamp::now());
+            send_embed(ctx, embed).await
+        }
+    }
+}
+
+/// Show the raw (unrendered) content of a tag.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    rename = "raw",
+    category = "Tags",
+)]
+async fn tag_raw(
+    ctx: Context<'_>,
+    #[description = "Name"] name: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap().get();
+    let state = &ctx.data().state;
+    let name = name.trim().to_lowercase();
+
+    let content = state
+        .tag_cache
+        .get(&guild_id)
+        .and_then(|gt| gt.get(&name).map(|t| t.content.clone()));
+
+    match content {
+        None => send_error(ctx, &format!("Tag `{name}` not found.")).await,
+        Some(c) => {
+            let escaped = c.replace('\\', "\\\\").replace('`', "\\`");
+            ctx.say(format!("```\n{escaped}\n```")).await?;
+            Ok(())
+        }
+    }
+}
+
+/// Evaluate a TagScript snippet without saving it.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    aliases("tt", "playground", "testtag"),
+    category = "Tags",
+)]
+async fn tagtest(
+    ctx: Context<'_>,
+    #[description = "TagScript"]
+    #[rest]
+    script: String,
+) -> Result<(), Error> {
+    let script = script.trim();
+    if script.is_empty() {
+        return send_error(ctx, "Usage: tagtest <tagscript>").await;
+    }
+
+    let sctx = ctx.serenity_context();
+    let author = ctx.author();
+    let guild_id = ctx.guild_id().unwrap();
+    let channel_id = ctx.channel_id();
+
+    let mut server_name = String::new();
+    let mut server_member_count = String::new();
+    let mut server_icon = String::new();
+    let mut channel_name = String::new();
+    if let Some(guild) = sctx.cache.guild(guild_id) {
+        server_name = guild.name.clone();
+        server_member_count = guild.member_count.to_string();
+        server_icon = guild.icon_url().unwrap_or_default();
+        if let Some(ch) = guild.channels.get(&channel_id) {
+            channel_name = ch.name.clone();
+        }
+    }
+
+    let mut tag_ctx = TagContext {
+        user_name: author.name.clone(),
+        user_mention: author.mention().to_string(),
+        user_id: author.id.get().to_string(),
+        user_avatar: author.avatar_url().unwrap_or_default(),
+        user_discriminator: author
+            .discriminator
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
+        target_name: author.name.clone(),
+        target_mention: author.mention().to_string(),
+        target_id: author.id.get().to_string(),
+        target_avatar: author.avatar_url().unwrap_or_default(),
+        target_discriminator: author
+            .discriminator
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
+        channel_name,
+        channel_id: channel_id.get().to_string(),
+        channel_mention: format!("<#{}>", channel_id.get()),
+        server_name,
+        server_id: guild_id.get().to_string(),
+        server_member_count,
+        server_icon,
+        args: script.to_string(),
+        uses: "0".to_string(),
+        ..Default::default()
+    };
+
+    let output = tagscript::run(script, &mut tag_ctx);
+
+    if output.stopped {
+        if !output.content.trim().is_empty() {
+            ctx.say(output.content).await?;
+        }
+        return Ok(());
+    }
+
+    let has_content = !output.content.trim().is_empty();
+    let has_embed = output.embed.is_some();
+    if has_content || has_embed {
+        let mut create = CreateMessage::new().allowed_mentions(CreateAllowedMentions::new());
+        if has_content {
+            let content: String = output.content.chars().take(2000).collect();
+            create = create.content(content);
+        }
+        if let Some(ref embed_json) = output.embed {
+            create = create.embed(json_to_embed(embed_json));
+        }
+        let _ = channel_id.send_message(&sctx.http, create).await;
+    }
+
+    Ok(())
+}
+
+// ---- TagsCog helpers (on_message path only) --------------------------------
+
 impl TagsCog {
     /// Build a fully-populated TagContext for an invocation. Synchronous so the
     /// cache guard is dropped before any `.await`.
-    fn build_tag_context(&self, ctx: &Context, msg: &Message, args: &str, uses: i64) -> TagContext {
+    fn build_tag_context(
+        &self,
+        ctx: &serenity::all::Context,
+        msg: &Message,
+        args: &str,
+        uses: i64,
+    ) -> TagContext {
         let author = &msg.author;
         let target = msg.mentions.first().unwrap_or(author);
 
@@ -171,43 +634,14 @@ impl TagsCog {
         }
     }
 
-    /// Whether the invoking author may edit/delete tags: bot owner, guild owner,
-    /// or holder of the Manage Server (Administrator implies it) permission.
-    fn member_can_manage(&self, ctx: &Context, msg: &Message, guild_id: u64) -> bool {
-        let user_id = msg.author.id.get();
-        if self.state.is_owner(user_id) {
-            return true;
-        }
-        let Some(guild) = ctx.cache.guild(GuildId::new(guild_id)) else {
-            return false;
-        };
-        if guild.owner_id.get() == user_id {
-            return true;
-        }
-        // Prefer the roles supplied with the gateway message, fall back to cache.
-        let roles: Vec<RoleId> = if let Some(pm) = &msg.member {
-            pm.roles.clone()
-        } else if let Some(member) = guild.members.get(&msg.author.id) {
-            member.roles.clone()
-        } else {
-            return false;
-        };
-
-        let mut perms = Permissions::empty();
-        if let Some(everyone) = guild.roles.get(&RoleId::new(guild_id)) {
-            perms |= everyone.permissions;
-        }
-        for rid in &roles {
-            if let Some(role) = guild.roles.get(rid) {
-                perms |= role.permissions;
-            }
-        }
-        perms.administrator() || perms.manage_guild()
-    }
-
     /// Send a tag's rendered output: text and/or embed to the redirect channel
     /// (or invoking channel), then apply reactions and deletion side effects.
-    async fn send_output_message(&self, ctx: &Context, msg: &Message, output: &TagOutput) {
+    async fn send_output_message(
+        &self,
+        ctx: &serenity::all::Context,
+        msg: &Message,
+        output: &TagOutput,
+    ) {
         let has_content = !output.content.trim().is_empty();
         let has_embed = output.embed.is_some();
         if has_content || has_embed {
@@ -244,7 +678,7 @@ impl TagsCog {
     /// Run a stored tag and apply all of its output side effects.
     async fn invoke_tag(
         &self,
-        ctx: &Context,
+        ctx: &serenity::all::Context,
         msg: &Message,
         guild_id: u64,
         name: &str,
@@ -320,438 +754,72 @@ impl TagsCog {
             }
         }
     }
+}
 
-    /// `tagtest`/`tt`/`playground`/`testtag` — render TagScript without saving.
-    async fn cmd_test(&self, ctx: &Context, msg: &Message, args: &str) {
-        if args.trim().is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "Usage: tagtest <tagscript>")
-                .await;
-            return;
-        }
-        let mut tag_ctx = self.build_tag_context(ctx, msg, args, 0);
-        let output = tagscript::run(args, &mut tag_ctx);
+// ---- free helpers ----------------------------------------------------------
 
-        if output.stopped {
-            if !output.content.trim().is_empty() {
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new()
-                            .content(output.content.clone())
-                            .allowed_mentions(CreateAllowedMentions::new()),
-                    )
-                    .await;
-            }
-            return;
-        }
-        self.send_output_message(ctx, msg, &output).await;
+/// Whether `user_id` may edit/delete tags: bot owner, guild owner, or holder
+/// of the Manage Server (Administrator implies it) permission. Checks member
+/// roles from cache first, falls back to HTTP if not cached.
+async fn member_can_manage(
+    sctx: &serenity::all::Context,
+    state: &AppState,
+    guild_id: u64,
+    user_id: u64,
+) -> bool {
+    if state.is_owner(user_id) {
+        return true;
     }
+    let gid = GuildId::new(guild_id);
+    let uid = UserId::new(user_id);
 
-    async fn handle_tag_command(&self, ctx: &Context, msg: &Message, guild_id: u64, rest: &str) {
-        let mut it = rest.splitn(2, ' ');
-        let subcommand = it.next().unwrap_or("");
-        let args = it.next().unwrap_or("").trim();
-
-        match subcommand {
-            "create" | "add" | "+" => self.cmd_create(ctx, msg, guild_id, args).await,
-            "edit" => self.cmd_edit(ctx, msg, guild_id, args).await,
-            "delete" | "del" | "remove" | "-" => self.cmd_delete(ctx, msg, guild_id, args).await,
-            "list" => self.cmd_list(ctx, msg, guild_id).await,
-            "info" => self.cmd_info(ctx, msg, guild_id, args).await,
-            "raw" => self.cmd_raw(ctx, msg, guild_id, args).await,
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        "Usage: `tag create <name> <content>` | `tag edit <name> <content>` | `tag delete <name>` | `tag list` | `tag info <name>` | `tag raw <name>`\nTest without saving: `tagtest <tagscript>`",
-                    )
-                    .await;
-            }
-        }
-    }
-
-    async fn cmd_create(&self, ctx: &Context, msg: &Message, guild_id: u64, args: &str) {
-        let mut parts = args.splitn(2, ' ');
-        let name = match parts.next() {
-            Some(n) if !n.is_empty() => n.to_lowercase(),
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Usage: tag create <name> <content>")
-                    .await;
-                return;
-            }
-        };
-        if RESERVED_NAMES.contains(&name.as_str()) {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    format!("`{name}` is reserved and can't be used as a tag name."),
-                )
-                .await;
-            return;
-        }
-        if name.chars().count() > MAX_TAG_NAME_LEN
-            || !name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    format!(
-                        "Tag names must be ≤{MAX_TAG_NAME_LEN} characters and contain only letters, numbers, `_` or `-`."
-                    ),
-                )
-                .await;
-            return;
-        }
-        let content = match parts.next() {
-            Some(c) if !c.trim().is_empty() => c.trim().to_string(),
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Please provide tag content.")
-                    .await;
-                return;
-            }
-        };
-        if content.chars().count() > MAX_TAG_CONTENT_LEN {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    format!("Tag content must be ≤{MAX_TAG_CONTENT_LEN} characters."),
-                )
-                .await;
-            return;
-        }
-
-        let owner_id = msg.author.id.get() as i64;
-        let created_at = chrono::Utc::now().timestamp();
-        // INSERT OR IGNORE: do nothing if (guild_id, name) already exists.
-        // SeaORM returns `Err(DbErr::RecordNotInserted)` when the conflict
-        // clause skips the row, which we treat as "already exists".
-        let result = tags::Entity::insert(tags::ActiveModel {
-            guild_id: Set(guild_id as i64),
-            name: Set(name.clone()),
-            content: Set(content.clone()),
-            owner_id: Set(owner_id),
-            uses: Set(0),
-            created_at: Set(created_at),
-        })
-        .on_conflict(
-            OnConflict::columns([tags::Column::GuildId, tags::Column::Name])
-                .do_nothing()
-                .to_owned(),
-        )
-        .exec(self.state.servers_orm())
-        .await;
-
-        match result {
-            Ok(_) => {
-                let len = content.chars().count();
-                self.state
-                    .tag_cache
-                    .entry(guild_id)
-                    .or_insert_with(HashMap::new)
-                    .insert(
-                        name.clone(),
-                        Tag {
-                            name: name.clone(),
-                            content,
-                            owner_id,
-                            uses: 0,
-                            created_at,
-                        },
-                    );
-                let embed = embeds::success_embed(
-                    "Success",
-                    &format!("Created tag `{name}`, length `{len}`"),
-                );
-                let _ = msg
-                    .channel_id
-                    .send_message(&ctx.http, CreateMessage::new().embed(embed))
-                    .await;
-            }
-            Err(DbErr::RecordNotInserted) => {
-                let _ = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        format!("Tag `{name}` already exists. Use `tag edit {name} <content>` to edit it."),
-                    )
-                    .await;
-            }
-            Err(e) => {
-                tracing::error!(error = ?e, "failed to create tag");
-                let _ = msg.channel_id.say(&ctx.http, "Database error.").await;
-            }
-        }
-    }
-
-    async fn cmd_edit(&self, ctx: &Context, msg: &Message, guild_id: u64, args: &str) {
-        let mut parts = args.splitn(2, ' ');
-        let name = match parts.next() {
-            Some(n) if !n.is_empty() => n.to_lowercase(),
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Usage: tag edit <name> <new content>")
-                    .await;
-                return;
-            }
-        };
-        let content = match parts.next() {
-            Some(c) if !c.trim().is_empty() => c.trim().to_string(),
-            _ => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, "Please provide new content.")
-                    .await;
-                return;
-            }
-        };
-        if content.chars().count() > MAX_TAG_CONTENT_LEN {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    format!("Tag content must be ≤{MAX_TAG_CONTENT_LEN} characters."),
-                )
-                .await;
-            return;
-        }
-
-        let owner_id = self
-            .state
-            .tag_cache
-            .get(&guild_id)
-            .and_then(|gt| gt.get(&name).map(|t| t.owner_id));
-
-        let owner_id = match owner_id {
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("Tag `{name}` not found."))
-                    .await;
-                return;
-            }
-            Some(id) => id,
-        };
-
-        if owner_id != msg.author.id.get() as i64 && !self.member_can_manage(ctx, msg, guild_id) {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    "You can only edit tags you own (or need the Manage Server permission).",
-                )
-                .await;
-            return;
-        }
-
-        let len = content.chars().count();
-        let _ = tags::Entity::update_many()
-            .col_expr(tags::Column::Content, Expr::value(content.clone()))
-            .filter(tags::Column::GuildId.eq(guild_id as i64))
-            .filter(tags::Column::Name.eq(name.as_str()))
-            .exec(self.state.servers_orm())
-            .await;
-        if let Some(mut gt) = self.state.tag_cache.get_mut(&guild_id) {
-            if let Some(t) = gt.get_mut(&name) {
-                t.content = content;
-            }
-        }
-
-        let embed = embeds::success_embed(
-            "Success",
-            &format!("Edited tag `{name}`, new length `{len}`"),
-        );
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-    }
-
-    async fn cmd_delete(&self, ctx: &Context, msg: &Message, guild_id: u64, name: &str) {
-        let name = name.trim().to_lowercase();
-        if name.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "Usage: tag delete <name>")
-                .await;
-            return;
-        }
-
-        let owner_id = self
-            .state
-            .tag_cache
-            .get(&guild_id)
-            .and_then(|gt| gt.get(&name).map(|t| t.owner_id));
-
-        let owner_id = match owner_id {
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("Tag `{name}` not found."))
-                    .await;
-                return;
-            }
-            Some(id) => id,
-        };
-
-        if owner_id != msg.author.id.get() as i64 && !self.member_can_manage(ctx, msg, guild_id) {
-            let _ = msg
-                .channel_id
-                .say(
-                    &ctx.http,
-                    "You can only delete tags you own (or need the Manage Server permission).",
-                )
-                .await;
-            return;
-        }
-
-        let _ = tags::Entity::delete_many()
-            .filter(tags::Column::GuildId.eq(guild_id as i64))
-            .filter(tags::Column::Name.eq(name.as_str()))
-            .exec(self.state.servers_orm())
-            .await;
-        if let Some(mut gt) = self.state.tag_cache.get_mut(&guild_id) {
-            gt.remove(&name);
-        }
-
-        let embed = CreateEmbed::new()
-            .title("Success")
-            .description(format!("Removed tag `{name}`"))
-            .color(colors::RED)
-            .timestamp(Timestamp::now());
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-    }
-
-    async fn cmd_list(&self, ctx: &Context, msg: &Message, guild_id: u64) {
-        let mut lines: Vec<String> = Vec::new();
-        {
-            if let Some(gt) = self.state.tag_cache.get(&guild_id) {
-                let mut names: Vec<String> = gt.keys().cloned().collect();
-                names.sort();
-                for n in names {
-                    if let Some(t) = gt.get(&n) {
-                        lines.push(format!(
-                            "{} - Uses: {} Length: {}",
-                            t.name,
-                            t.uses,
-                            t.content.chars().count()
-                        ));
+    // Compute what we can from the cache in one guard scope, then drop it
+    // before any potential HTTP call.
+    let (is_owner, cached_result) = match sctx.cache.guild(gid) {
+        None => return false,
+        Some(g) => {
+            let is_owner = g.owner_id.get() == user_id;
+            let result = g.members.get(&uid).map(|m| {
+                let mut perms = Permissions::empty();
+                if let Some(everyone) = g.roles.get(&RoleId::new(guild_id)) {
+                    perms |= everyone.permissions;
+                }
+                for rid in &m.roles {
+                    if let Some(role) = g.roles.get(rid) {
+                        perms |= role.permissions;
                     }
                 }
-            }
+                perms.administrator() || perms.manage_guild()
+            });
+            (is_owner, result)
         }
+    };
 
-        if lines.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "No tags in this server.")
-                .await;
-            return;
-        }
-
-        let server_name = ctx
-            .cache
-            .guild(GuildId::new(guild_id))
-            .map(|g| g.name.clone())
-            .unwrap_or_else(|| "Server".to_string());
-        let vis = lines.join("\n");
-        let embed = CreateEmbed::new()
-            .title(format!("{server_name} Tags"))
-            .description(format!("```yaml\n{vis}\n```"))
-            .color(colors::PINK)
-            .timestamp(Timestamp::now());
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
+    if is_owner {
+        return true;
     }
 
-    async fn cmd_info(&self, ctx: &Context, msg: &Message, guild_id: u64, name: &str) {
-        let name = name.trim().to_lowercase();
-        if name.is_empty() {
-            let _ = msg
-                .channel_id
-                .say(&ctx.http, "Usage: tag info <name>")
-                .await;
-            return;
-        }
-
-        let tag = self
-            .state
-            .tag_cache
-            .get(&guild_id)
-            .and_then(|gt| gt.get(&name).cloned());
-
-        match tag {
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("Tag `{name}` not found."))
-                    .await;
+    match cached_result {
+        Some(can_manage) => can_manage,
+        None => {
+            // Member not in cache — fall back to HTTP.
+            let member = match gid.member(&sctx.http, uid).await {
+                Ok(m) => m,
+                Err(_) => return false,
+            };
+            let Some(g) = sctx.cache.guild(gid) else {
+                return false;
+            };
+            let mut perms = Permissions::empty();
+            if let Some(everyone) = g.roles.get(&RoleId::new(guild_id)) {
+                perms |= everyone.permissions;
             }
-            Some(t) => {
-                let created = chrono::DateTime::from_timestamp(t.created_at, 0)
-                    .map(|dt| dt.format("%Y-%m-%d").to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-                let embed = CreateEmbed::new()
-                    .title(format!("Tag: {}", t.name))
-                    .color(colors::ORANGE)
-                    .field("Owner", format!("<@{}>", t.owner_id), true)
-                    .field("Uses", t.uses.to_string(), true)
-                    .field("Length", t.content.chars().count().to_string(), true)
-                    .field("Created", created, true)
-                    .timestamp(Timestamp::now());
-                let _ = msg
-                    .channel_id
-                    .send_message(&ctx.http, CreateMessage::new().embed(embed))
-                    .await;
+            for rid in &member.roles {
+                if let Some(role) = g.roles.get(rid) {
+                    perms |= role.permissions;
+                }
             }
-        }
-    }
-
-    async fn cmd_raw(&self, ctx: &Context, msg: &Message, guild_id: u64, name: &str) {
-        let name = name.trim().to_lowercase();
-        if name.is_empty() {
-            let _ = msg.channel_id.say(&ctx.http, "Usage: tag raw <name>").await;
-            return;
-        }
-
-        let content = self
-            .state
-            .tag_cache
-            .get(&guild_id)
-            .and_then(|gt| gt.get(&name).map(|t| t.content.clone()));
-
-        match content {
-            None => {
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("Tag `{name}` not found."))
-                    .await;
-            }
-            Some(c) => {
-                let escaped = c.replace('\\', "\\\\").replace('`', "\\`");
-                let _ = msg
-                    .channel_id
-                    .say(&ctx.http, format!("```\n{escaped}\n```"))
-                    .await;
-            }
+            perms.administrator() || perms.manage_guild()
         }
     }
 }
