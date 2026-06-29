@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
         embed::EmbedCog, events::EventsCog, help::HelpCog, info::InfoCog, logging::LoggingCog,
         moderation::ModerationCog, music::MusicCog, ocr::OcrCog, prefixes::PrefixesCog,
         premium::PremiumCog, reminders::RemindersCog, roles::RolesCog, sentinel::SentinelCog,
-        settings::SettingsCog, tags::TagsCog, translate::TranslateCog, welcome::WelcomeCog,
+        settings::SettingsCog, translate::TranslateCog, welcome::WelcomeCog,
     };
 
     // Cogs own the gateway-event hooks (AFK, sentinel, logging, welcome, ...);
@@ -145,7 +145,8 @@ async fn main() -> Result<()> {
     manager.register(PrefixesCog::new(app_state.clone()));
     manager.register(AfkCog::new(app_state.clone()));
     manager.register(RemindersCog::new(app_state.clone()));
-    manager.register(TagsCog::new(app_state.clone()));
+    // TEMPORARILY DISABLED: TagScript engine has known issues (see tagscript/mod.rs).
+    // manager.register(TagsCog::new(app_state.clone()));
     manager.register(WelcomeCog::new(app_state.clone()));
     manager.register(LoggingCog::new(app_state.clone()));
     manager.register(SettingsCog::new(app_state.clone()));

@@ -35,8 +35,24 @@ const MAX_NODES: u32 = 5_000;
 /// Max accumulated output (chars) per render level before it is truncated.
 const MAX_OUTPUT: usize = 10_000;
 
+/// TEMPORARILY DISABLED. The TagScript engine has known correctness/security
+/// issues — most importantly the `{require}`/`{whitelist}`/`{blacklist}` access
+/// gates are no-ops, so a tag that should be restricted instead *fails open*.
+/// Until those are fixed the engine is switched off at the entry point: every
+/// template is returned verbatim with no block evaluation and no side effects.
+/// Flip this back to `true` to re-enable the engine.
+const ENGINE_ENABLED: bool = false;
+
 /// Render a TagScript template against `ctx`, producing text + side effects.
 pub fn run(template: &str, ctx: &mut TagContext) -> TagOutput {
+    if !ENGINE_ENABLED {
+        // Inert passthrough: emit the raw template, drop all `{...}` evaluation.
+        return TagOutput {
+            content: template.to_owned(),
+            ..TagOutput::default()
+        };
+    }
+
     ctx.break_body = None;
     ctx.nodes = 0;
     let mut output = TagOutput::default();
