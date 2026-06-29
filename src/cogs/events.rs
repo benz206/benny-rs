@@ -124,6 +124,10 @@ impl Cog for EventsCog {
     }
 
     async fn on_guild_create(&self, ctx: &Context, guild: &Guild) {
+        // Keep the dashboard API's membership mirror current for every
+        // guild_create (genuine join, startup sync, or reconnect) — idempotent.
+        self.state.guild_set.insert(guild.id.get(), ());
+
         // Only act on genuine joins, never the startup/reconnect guild sync.
         if !self.ready_seen.load(Ordering::SeqCst) {
             return;
@@ -177,6 +181,8 @@ impl Cog for EventsCog {
         if incomplete.unavailable {
             return;
         }
+        // A genuine removal — drop it from the dashboard API membership mirror.
+        self.state.guild_set.remove(&incomplete.id.get());
         // Forget the guild so a future re-join is detected as a genuine join.
         if let Ok(mut known) = self.known_guilds.lock() {
             known.remove(&incomplete.id);

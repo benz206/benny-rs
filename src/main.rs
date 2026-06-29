@@ -210,6 +210,15 @@ async fn main() -> Result<()> {
                 info!("  Guilds: {}", ctx.cache.guilds().len());
                 info!("===========================================");
 
+                // Mirror the bot's identity and current guild membership into
+                // shared state so the dashboard HTTP API (which has no serenity
+                // Context) can authorize guild-scoped routes. `cogs::events`
+                // keeps `guild_set` current on later joins/leaves.
+                let _ = state.bot_id.set(ready.user.id.get());
+                for gid in ctx.cache.guilds() {
+                    state.guild_set.insert(gid.get(), ());
+                }
+
                 // Build the help menu from the registered command set.
                 cogs::help::init_help_index(&fw.options().commands);
 
