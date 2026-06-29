@@ -99,7 +99,9 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
         "dev_redis",
         "dev_logs",
         "dev_uptime",
-        "dev_ping"
+        "dev_ping",
+        "dev_sync",
+        "dev_clear"
     )
 )]
 async fn dev(ctx: Context<'_>) -> Result<(), Error> {
@@ -112,7 +114,8 @@ async fn dev(ctx: Context<'_>) -> Result<(), Error> {
              **Redis:** `dev redis <get|set|search|info|cinfo|showall>`\n\
              **Logs:** `dev logs [n]`\n\
              **Process:** `dev uptime`, `dev ping`, `dev close`\n\
-             **Disabled in Rust build:** `dev eval`, `dev load`/`unload`/`reload`",
+             **Sync:** `dev sync`, `dev clear`\n\
+             **Disabled in Rust build:** `dev eval`, `dev load`/`unload`/`reload`, `openfile`",
         )
         .color(colors::BLACK)
         .timestamp(Timestamp::now());
@@ -483,8 +486,8 @@ async fn dev_logs(
             let embed = CreateEmbed::new()
                 .title("Not Supported")
                 .description(format!(
-                    "File logging is not configured \u{2014} `{LOG_FILE}` does not exist. \
-                     The bot currently logs to stdout; wire `tracing-appender` in `main.rs` to enable file logs."
+                    "`{LOG_FILE}` does not exist yet \u{2014} no log entries have been written so far. \
+                     It will be created once the bot writes its first log entry."
                 ))
                 .color(colors::YELLOW)
                 .timestamp(Timestamp::now());
@@ -521,6 +524,50 @@ async fn dev_uptime(ctx: Context<'_>) -> Result<(), Error> {
 async fn dev_ping(ctx: Context<'_>) -> Result<(), Error> {
     ctx.say("Pong (dev)!").await?;
     Ok(())
+}
+
+/// Register the bot's global application (slash) commands.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "sync"
+)]
+async fn dev_sync(ctx: Context<'_>) -> Result<(), Error> {
+    poise::builtins::register_globally(
+        ctx.serenity_context(),
+        &ctx.framework().options().commands,
+    )
+    .await?;
+    let embed = CreateEmbed::new()
+        .title("Commands Synced")
+        .description("Global application commands have been registered.")
+        .color(colors::GREEN)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
+}
+
+/// Clear all registered global application (slash) commands.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    owners_only,
+    hide_in_help,
+    rename = "clear"
+)]
+async fn dev_clear(ctx: Context<'_>) -> Result<(), Error> {
+    poise::builtins::register_globally(
+        ctx.serenity_context(),
+        &[] as &[poise::Command<Data, Error>],
+    )
+    .await?;
+    let embed = CreateEmbed::new()
+        .title("Commands Cleared")
+        .description("All global application commands have been cleared.")
+        .color(colors::RED)
+        .timestamp(Timestamp::now());
+    send_embed(ctx, embed).await
 }
 
 // ---- free helpers ---------------------------------------------------------
