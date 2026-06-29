@@ -10,10 +10,11 @@ use std::time::Duration;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    ActionRowComponent, ButtonStyle, Channel, ChannelId, ComponentInteraction, CreateActionRow,
-    CreateButton, CreateEmbed, CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, CreateModal, EditMember, GetMessages, GuildId,
-    InputTextStyle, Member, Message, ModalInteraction, Permissions, Timestamp,
+    ActionRowComponent, ButtonStyle, Channel, ChannelId, ChannelType, ComponentInteraction,
+    CreateActionRow, CreateButton, CreateChannel, CreateEmbed, CreateEmbedFooter, CreateInputText,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, CreateModal,
+    EditMember, GetMessages, GuildId, InputTextStyle, Member, Message, ModalInteraction,
+    Permissions, Timestamp,
 };
 use std::sync::{Arc, LazyLock};
 
@@ -465,7 +466,8 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
         "sentinel_channel",
         "sentinel_threshold",
         "sentinel_delete",
-        "sentinel_config"
+        "sentinel_config",
+        "sentinel_default"
     )
 )]
 async fn sentinel(_ctx: Context<'_>) -> Result<(), Error> {
@@ -731,6 +733,96 @@ async fn sentinel_config(ctx: Context<'_>) -> Result<(), Error> {
     )
     .await?;
     Ok(())
+}
+
+/// One-shot setup: create a sentinel log channel and apply sensible defaults.
+#[poise::command(
+    slash_command,
+    prefix_command,
+    guild_only,
+    category = "Sentinel",
+    required_permissions = "MANAGE_GUILD",
+    rename = "default"
+)]
+async fn sentinel_default(ctx: Context<'_>) -> Result<(), Error> {
+    let state = &ctx.data().state;
+    let sctx = ctx.serenity_context();
+    let guild_id = ctx.guild_id().unwrap();
+    let gid = guild_id.get();
+
+    // Reuse the existing log channel if one is already configured.
+    let channel_id: i64 = if let Some(existing) =
+        state.sentinel_cache.get(&gid).and_then(|c| c.log_channel_id)
+    {
+        existing
+    } else {
+        let ch = guild_id
+            .create_channel(
+                &sctx.http,
+                CreateChannel::new("sentinel").kind(ChannelType::Text),
+            )
+            .await?;
+        ch.id.get() as i64
+    };
+
+    const DEFAULT_THRESH: f64 = 0.85;
+
+    let _ = sentinel_config::Entity::insert(sentinel_config::ActiveModel {
+        guild_id: Set(gid as i64),
+        enabled: Set(true),
+        log_channel_id: Set(Some(channel_id)),
+        toxicity: Set(DEFAULT_THRESH),
+        severe_toxicity: Set(DEFAULT_THRESH),
+        obscene: Set(DEFAULT_THRESH),
+        threat: Set(DEFAULT_THRESH),
+        insult: Set(DEFAULT_THRESH),
+        identity_attack: Set(DEFAULT_THRESH),
+        sexual_explicit: Set(DEFAULT_THRESH),
+        delete_flagged: Set(false),
+    })
+    .on_conflict(
+        OnConflict::column(sentinel_config::Column::GuildId)
+            .update_columns([
+                sentinel_config::Column::Enabled,
+                sentinel_config::Column::LogChannelId,
+                sentinel_config::Column::Toxicity,
+                sentinel_config::Column::SevereToxicity,
+                sentinel_config::Column::Obscene,
+                sentinel_config::Column::Threat,
+                sentinel_config::Column::Insult,
+                sentinel_config::Column::IdentityAttack,
+                sentinel_config::Column::SexualExplicit,
+            ])
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await;
+
+    state.sentinel_cache.insert(
+        gid,
+        SentinelConfig {
+            enabled: true,
+            log_channel_id: Some(channel_id),
+            toxicity: DEFAULT_THRESH,
+            severe_toxicity: DEFAULT_THRESH,
+            obscene: DEFAULT_THRESH,
+            threat: DEFAULT_THRESH,
+            insult: DEFAULT_THRESH,
+            identity_attack: DEFAULT_THRESH,
+            sexual_explicit: DEFAULT_THRESH,
+        },
+    );
+
+    send_embed(
+        ctx,
+        embeds::success_embed(
+            "Sentinel Ready",
+            &format!(
+                "Sentinel is now **enabled**.\n**Log channel:** <#{channel_id}>\n**All thresholds:** {DEFAULT_THRESH:.2}",
+            ),
+        ),
+    )
+    .await
 }
 
 // ---- decancer command group ------------------------------------------------
