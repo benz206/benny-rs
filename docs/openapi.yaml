@@ -1,0 +1,778 @@
+openapi: 3.1.0
+info:
+  title: benny-rs Dashboard API
+  version: "1.0.0"
+  description: |
+    Authenticated control plane for the benny-rs Discord bot. The bot owns the
+    SQLite databases and the authoritative in-memory caches; this API is the
+    single writer the dashboard uses so caches never go stale (every write
+    updates the DB **and** the matching cache in the same handler).
+
+    **Topology.** This API is intended to be called by the dashboard's own
+    server (a Backend-for-Frontend), never directly from a browser. The BFF
+    holds the bearer token and forwards the acting Discord user's id as
+    `X-Actor-Id`.
+
+    **Mounting.** The `/api/v1` tree exists only when `dashboard_api_token` is
+    set in `config.json`. With no token configured the bot still serves the
+    public endpoints below, but every `/api/v1/*` path returns `404`.
+
+    **IDs.** Every Discord snowflake is represented as a **string** in both
+    requests and responses (JSON numbers lose precision above 2^53).
+
+    **Out of scope for v1 (planned).** Per-user resources — reminders
+    (`reminders_reminders`) and user settings (`settings_users`: timezone,
+    patron level, blacklist) — are not exposed yet. They are planned for a
+    future revision and intentionally omitted here.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local bot process (bind address is fixed)
+  - url: https://api.your-bot.example.com
+    description: Behind a reverse proxy / tunnel (see docs/dashboard-api.md)
+
+tags:
+  - name: public
+    description: Unauthenticated liveness/health endpoints (always on).
+  - name: meta
+    description: API metadata.
+  - name: guilds
+    description: Guild listing and aggregated overview.
+  - name: config
+    description: Per-guild configuration sections (read + replace).
+  - name: tags
+    description: Per-guild custom tags (CRUD).
+  - name: moderation
+    description: Read-only moderation views.
+
+paths:
+  # ---- public (unauthenticated) ------------------------------------------
+  /:
+    get:
+      tags: [public]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alive: { type: boolean }
+                  service: { type: string }
+  /ping:
+    get:
+      tags: [public]
+      summary: Recent gateway latency samples
+      security: []
+      responses:
+        "200":
+          description: Latency history (milliseconds).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  latency_ms:
+                    type: array
+                    items: { type: integer }
+  /health:
+    get:
+      tags: [public]
+      summary: Service health
+      security: []
+      responses:
+        "200":
+          description: DB/Redis status and uptime.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  db: { type: string }
+                  redis: { type: string }
+                  uptime_secs: { type: integer }
+  /stats:
+    get:
+      tags: [public]
+      summary: Version and uptime (public)
+      security: []
+      responses:
+        "200":
+          description: Version and uptime.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+                  uptime_secs: { type: integer }
+
+  # ---- api meta ----------------------------------------------------------
+  /api/v1/stats:
+    get:
+      tags: [meta]
+      summary: Version, uptime, and guild count (authenticated)
+      responses:
+        "200":
+          description: Stats.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stats" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  # ---- guilds ------------------------------------------------------------
+  /api/v1/guilds:
+    get:
+      tags: [guilds]
+      summary: List guild ids the bot is in
+      responses:
+        "200":
+          description: Guild id list.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuildList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /api/v1/guilds/{gid}:
+    get:
+      tags: [guilds]
+      summary: Aggregated guild overview
+      description: Every config section for the guild in a single response.
+      parameters: [{ $ref: "#/components/parameters/Gid" }]
+      responses:
+        "200":
+          description: Overview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GuildOverview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  # ---- config: prefixes --------------------------------------------------
+  /api/v1/guilds/{gid}/prefixes:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get custom prefixes
+      responses:
+        "200":
+          description: Prefix list.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrefixesBody" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Replace the full prefix set
+      description: |
+        Replaces all custom prefixes. Each prefix is trimmed, must be non-empty,
+        at most 25 characters, and may not contain `:|:`. At most 15 prefixes.
+        An empty list clears custom prefixes (the guild falls back to the
+        global default). Updates `prefix_cache`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PrefixesBody" }
+      responses:
+        "200":
+          description: The stored prefix set (sorted by length).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrefixesBody" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- config: welcome ---------------------------------------------------
+  /api/v1/guilds/{gid}/welcome:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get welcome config
+      responses:
+        "200":
+          description: Welcome config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Replace welcome config
+      description: |
+        Upserts the full welcome row and refreshes `welcome_cache`. If
+        `embed_json` is provided it must be a JSON **object** string.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessageConfig" }
+      responses:
+        "200":
+          description: Stored welcome config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- config: goodbye ---------------------------------------------------
+  /api/v1/guilds/{gid}/goodbye:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get goodbye config
+      responses:
+        "200":
+          description: Goodbye config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Replace goodbye config
+      description: Upserts the full goodbye row and refreshes `goodbye_cache`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessageConfig" }
+      responses:
+        "200":
+          description: Stored goodbye config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- config: logging ---------------------------------------------------
+  /api/v1/guilds/{gid}/logging:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get logging config
+      responses:
+        "200":
+          description: Logging config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoggingConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Replace logging config
+      description: |
+        Upserts the logging row and refreshes `logging_cache`. A non-empty
+        `webhook_url` must be a Discord webhook
+        (`https://discord.com/api/webhooks/...`); logging cannot be enabled
+        with an empty `webhook_url`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoggingConfig" }
+      responses:
+        "200":
+          description: Stored logging config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoggingConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- config: sentinel --------------------------------------------------
+  /api/v1/guilds/{gid}/sentinel:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get sentinel config
+      responses:
+        "200":
+          description: Sentinel config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SentinelConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Replace sentinel config
+      description: |
+        Upserts the sentinel + decancer rows and refreshes `sentinel_cache`
+        plus the cog-private `delete_flagged` / decancer caches. Each threshold
+        must be a finite number in `[0.0, 1.0]`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SentinelConfig" }
+      responses:
+        "200":
+          description: Stored sentinel config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SentinelConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- config: roles -----------------------------------------------------
+  /api/v1/guilds/{gid}/roles:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get autoroles and sticky-roles toggle
+      responses:
+        "200":
+          description: Roles config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RolesConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Replace autoroles and set sticky toggle
+      description: |
+        Replaces the autorole set (at most 25 roles) and sets the sticky-roles
+        toggle. Both are read from the DB by the bot on each join, so there is
+        no in-memory cache to update.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RolesConfig" }
+      responses:
+        "200":
+          description: Stored roles config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RolesConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- config: moderation ------------------------------------------------
+  /api/v1/guilds/{gid}/moderation:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get moderation config (mute role)
+      responses:
+        "200":
+          description: Moderation config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModerationConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Set the mute role
+      description: Upserts `mod_config.mute_role_id` (read from DB per action; no cache).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModerationConfig" }
+      responses:
+        "200":
+          description: Stored moderation config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModerationConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- tags --------------------------------------------------------------
+  /api/v1/guilds/{gid}/tags:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [tags]
+      summary: List tags
+      responses:
+        "200":
+          description: All tags in the guild.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [tags]
+      summary: Create a tag
+      description: |
+        Name is lower-cased, at most 32 characters, letters/numbers/`_`/`-`
+        only, and may not be a reserved name (`tag`, `tagtest`, `tt`,
+        `playground`, `testtag`). Content is at most 2000 characters. The tag
+        owner is set to `X-Actor-Id`. Updates `tag_cache`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTag" }
+      responses:
+        "201":
+          description: Created tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/guilds/{gid}/tags/{name}:
+    parameters:
+      - { $ref: "#/components/parameters/Gid" }
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+        description: Tag name (matched case-insensitively).
+    get:
+      tags: [tags]
+      summary: Get a tag
+      responses:
+        "200":
+          description: The tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [tags]
+      summary: Update a tag's content
+      description: Updates the DB and `tag_cache`. Owner and use count are preserved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchTag" }
+      responses:
+        "200":
+          description: The updated tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [tags]
+      summary: Delete a tag
+      description: Removes the row and the `tag_cache` entry.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- moderation (read-only) --------------------------------------------
+  /api/v1/guilds/{gid}/cases:
+    parameters:
+      - { $ref: "#/components/parameters/Gid" }
+      - name: limit
+        in: query
+        required: false
+        schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      - name: offset
+        in: query
+        required: false
+        schema: { type: integer, minimum: 0, default: 0 }
+    get:
+      tags: [moderation]
+      summary: List moderation cases (newest first, paginated)
+      responses:
+        "200":
+          description: Cases page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CasesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/guilds/{gid}/mutes:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [moderation]
+      summary: List active timed mutes
+      responses:
+        "200":
+          description: Active mutes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The `dashboard_api_token` from the bot's `config.json`.
+    actorId:
+      type: apiKey
+      in: header
+      name: X-Actor-Id
+      description: |
+        The acting Discord user's id (snowflake as a string). Required on every
+        `/api/v1` request. Used for the blacklist check and audit logging.
+
+  parameters:
+    Gid:
+      name: gid
+      in: path
+      required: true
+      schema: { type: string }
+      description: Guild id (snowflake as a string). 404 if the bot isn't in it.
+
+  responses:
+    BadRequest:
+      description: Malformed input.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing/invalid bearer token, or missing X-Actor-Id.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Actor is blacklisted.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found, or the bot isn't in the guild.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Conflicts with current state (e.g. tag already exists).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: Per-actor rate limit exceeded.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+    Stats:
+      type: object
+      properties:
+        version: { type: string }
+        uptime_secs: { type: integer }
+        guild_count: { type: integer }
+      required: [version, uptime_secs, guild_count]
+
+    GuildList:
+      type: object
+      properties:
+        guild_ids:
+          type: array
+          items: { type: string, description: Guild id snowflake (string) }
+      required: [guild_ids]
+
+    GuildOverview:
+      type: object
+      properties:
+        guild_id: { type: string }
+        prefixes: { $ref: "#/components/schemas/PrefixesBody" }
+        welcome: { $ref: "#/components/schemas/MessageConfig" }
+        goodbye: { $ref: "#/components/schemas/MessageConfig" }
+        logging: { $ref: "#/components/schemas/LoggingConfig" }
+        sentinel: { $ref: "#/components/schemas/SentinelConfig" }
+        roles: { $ref: "#/components/schemas/RolesConfig" }
+        moderation: { $ref: "#/components/schemas/ModerationConfig" }
+      required: [guild_id, prefixes, welcome, goodbye, logging, sentinel, roles, moderation]
+
+    PrefixesBody:
+      type: object
+      properties:
+        prefixes:
+          type: array
+          items: { type: string }
+          maxItems: 15
+      required: [prefixes]
+
+    MessageConfig:
+      type: object
+      description: Welcome/goodbye message config (the two are structurally identical).
+      properties:
+        channel_id:
+          type: [string, "null"]
+          description: Channel id snowflake (string), or null if unset.
+        message: { type: string, description: TagScript template. }
+        embed_json:
+          type: [string, "null"]
+          description: A JSON object string for a custom embed, or null.
+        enabled: { type: boolean }
+      required: [message, enabled]
+
+    LoggingConfig:
+      type: object
+      properties:
+        webhook_url:
+          type: string
+          description: Discord webhook URL (empty string when unset).
+        enabled: { type: boolean }
+      required: [webhook_url, enabled]
+
+    Thresholds:
+      type: object
+      description: Per-category toxicity thresholds, each in [0.0, 1.0].
+      properties:
+        toxicity: { type: number, minimum: 0, maximum: 1 }
+        severe_toxicity: { type: number, minimum: 0, maximum: 1 }
+        obscene: { type: number, minimum: 0, maximum: 1 }
+        threat: { type: number, minimum: 0, maximum: 1 }
+        insult: { type: number, minimum: 0, maximum: 1 }
+        identity_attack: { type: number, minimum: 0, maximum: 1 }
+        sexual_explicit: { type: number, minimum: 0, maximum: 1 }
+      required:
+        [toxicity, severe_toxicity, obscene, threat, insult, identity_attack, sexual_explicit]
+
+    DecancerConfig:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        log_channel_id:
+          type: [string, "null"]
+      required: [enabled]
+
+    SentinelConfig:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        log_channel_id:
+          type: [string, "null"]
+        delete_flagged: { type: boolean }
+        thresholds: { $ref: "#/components/schemas/Thresholds" }
+        decancer: { $ref: "#/components/schemas/DecancerConfig" }
+      required: [enabled, delete_flagged, thresholds, decancer]
+
+    RolesConfig:
+      type: object
+      properties:
+        autoroles:
+          type: array
+          items: { type: string, description: Role id snowflake (string) }
+          maxItems: 25
+        sticky_enabled: { type: boolean }
+      required: [autoroles, sticky_enabled]
+
+    ModerationConfig:
+      type: object
+      properties:
+        mute_role_id:
+          type: [string, "null"]
+      required: []
+
+    TagResponse:
+      type: object
+      properties:
+        name: { type: string }
+        content: { type: string }
+        owner_id: { type: string }
+        uses: { type: integer }
+        created_at: { type: integer, description: Unix seconds. }
+      required: [name, content, owner_id, uses, created_at]
+
+    TagList:
+      type: object
+      properties:
+        tags:
+          type: array
+          items: { $ref: "#/components/schemas/TagResponse" }
+      required: [tags]
+
+    CreateTag:
+      type: object
+      properties:
+        name: { type: string, maxLength: 32 }
+        content: { type: string, maxLength: 2000 }
+      required: [name, content]
+
+    PatchTag:
+      type: object
+      properties:
+        content: { type: string, maxLength: 2000 }
+      required: [content]
+
+    Case:
+      type: object
+      properties:
+        case_number: { type: integer }
+        action_type: { type: string }
+        target_id: { type: string }
+        moderator_id: { type: string }
+        reason: { type: string }
+        created_at: { type: integer, description: Unix seconds. }
+        active: { type: boolean }
+        expires_at:
+          type: [integer, "null"]
+          description: Unix seconds, or null for permanent.
+      required: [case_number, action_type, target_id, moderator_id, reason, created_at, active]
+
+    CasesResponse:
+      type: object
+      properties:
+        cases:
+          type: array
+          items: { $ref: "#/components/schemas/Case" }
+        limit: { type: integer }
+        offset: { type: integer }
+      required: [cases, limit, offset]
+
+    Mute:
+      type: object
+      properties:
+        case_number: { type: integer }
+        user_id: { type: string }
+        action: { type: string }
+        expires_at: { type: integer, description: Unix seconds. }
+      required: [case_number, user_id, action, expires_at]
+
+    MutesResponse:
+      type: object
+      properties:
+        mutes:
+          type: array
+          items: { $ref: "#/components/schemas/Mute" }
+      required: [mutes]
+
+# Bearer + actor id are required on every operation except those that set
+# `security: []` (the public endpoints).
+security:
+  - bearerAuth: []
+    actorId: []
