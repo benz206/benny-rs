@@ -48,6 +48,43 @@ pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     cmds
 }
 
+// ---- rate limits -----------------------------------------------------------
+//
+// poise enforces a command's cooldown automatically from `Command::cooldown_config`
+// before dispatch, and `builtins::on_error` (which `on_error` below delegates to)
+// already replies to `CooldownHit`. So setting the config is all that's needed.
+
+/// Apply per-command cooldowns: a light per-user baseline on everything as
+/// anti-spam, plus heavier limits on commands that hit external APIs, spawn a
+/// subprocess, or sweep a whole guild. Recurses into subcommands because poise
+/// checks the cooldown of the leaf command that actually runs.
+pub fn apply_rate_limits(commands: &mut [poise::Command<Data, Error>]) {
+    use std::time::Duration;
+    let user = |secs| poise::CooldownConfig {
+        user: Some(Duration::from_secs(secs)),
+        ..Default::default()
+    };
+    let guild = |secs| poise::CooldownConfig {
+        guild: Some(Duration::from_secs(secs)),
+        ..Default::default()
+    };
+    for cmd in commands.iter_mut() {
+        let cfg = match cmd.qualified_name.as_str() {
+            "ocr" => user(5),
+            "version" => user(5),
+            "translate" | "define" => user(3),
+            "play" => user(2),
+            "tag create" | "tag edit" => user(2),
+            // Whole-guild role sweep — one HTTP call per member; throttle per guild.
+            "role all" | "roleall" => guild(30),
+            // Baseline anti-spam for everything else.
+            _ => user(1),
+        };
+        *cmd.cooldown_config.write().unwrap() = cfg;
+        apply_rate_limits(&mut cmd.subcommands);
+    }
+}
+
 // ---- shared reply helpers --------------------------------------------------
 //
 // Command bodies reply through these so prefix and slash invocations are

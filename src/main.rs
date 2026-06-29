@@ -170,8 +170,10 @@ async fn main() -> Result<()> {
         .map(|&id| serenity::all::UserId::new(id))
         .collect();
 
+    let mut commands = framework::all_commands();
+    framework::apply_rate_limits(&mut commands);
     let options = poise::FrameworkOptions {
-        commands: framework::all_commands(),
+        commands,
         owners,
         prefix_options: poise::PrefixFrameworkOptions {
             // Guild-aware longest-match prefix; falls back to the global default.
