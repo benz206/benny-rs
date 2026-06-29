@@ -551,7 +551,8 @@ async fn role_all(
     prefix_command,
     guild_only,
     category = "Roles",
-    required_permissions = "MANAGE_ROLES"
+    required_permissions = "MANAGE_ROLES",
+    aliases("removeall", "rall")
 )]
 async fn roleall(
     ctx: Context<'_>,

@@ -1,7 +1,7 @@
 use super::Cog;
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::AppState;
-use crate::utils::format::humanize_duration;
+use crate::utils::format::{humanize_duration, truncate};
 use crate::utils::colors;
 use chrono::Utc;
 use serenity::all::{CreateEmbed, CreateEmbedFooter, Member, Permissions, Timestamp};
@@ -53,7 +53,7 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
 // ---- commands ---------------------------------------------------------------
 
 /// Check the bot's latency.
-#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+#[poise::command(slash_command, prefix_command, category = "Info & Utility", aliases("pong"))]
 async fn ping(ctx: Context<'_>) -> Result<(), Error> {
     let initial = CreateEmbed::new()
         .title("Pinging...")
@@ -242,7 +242,7 @@ async fn invite(ctx: Context<'_>) -> Result<(), Error> {
 }
 
 /// Look up Unicode information for one or more characters.
-#[poise::command(slash_command, prefix_command, category = "Info & Utility")]
+#[poise::command(slash_command, prefix_command, category = "Info & Utility", aliases("ci", "char"))]
 async fn charinfo(
     ctx: Context<'_>,
     #[description = "Characters"]
@@ -251,7 +251,6 @@ async fn charinfo(
 ) -> Result<(), Error> {
     let lines: Vec<String> = characters
         .chars()
-        .take(25)
         .map(|ch| {
             let cp = ch as u32;
             let name = unicode_names2::name(ch)
@@ -263,9 +262,10 @@ async fn charinfo(
         })
         .collect();
 
+    let joined = lines.join("\n");
     let embed = CreateEmbed::new()
         .title("Charinfo")
-        .description(lines.join("\n"))
+        .description(truncate(&joined, 1900).to_string())
         .color(colors::YELLOW)
         .timestamp(Timestamp::now());
     send_embed(ctx, embed).await

@@ -10,7 +10,7 @@ use serenity::all::{CreateEmbed, Guild, Timestamp, UnavailableGuild};
 use std::sync::Arc;
 
 /// Maximum number of custom prefixes a guild may have.
-const MAX_PREFIXES: usize = 5;
+const MAX_PREFIXES: usize = 15;
 /// Maximum length of a single prefix; values over this limit are rejected.
 const MAX_PREFIX_LEN: usize = 25;
 /// Separator previously used to join multiple prefixes in a single DB column.
@@ -120,6 +120,7 @@ async fn prefix(_: Context<'_>) -> Result<(), Error> {
     slash_command,
     prefix_command,
     rename = "add",
+    aliases("create", "+"),
     required_permissions = "MANAGE_GUILD",
     guild_only
 )]
@@ -188,6 +189,7 @@ async fn prefix_add(
     slash_command,
     prefix_command,
     rename = "remove",
+    aliases("del", "rm", "delete", "-"),
     required_permissions = "MANAGE_GUILD",
     guild_only
 )]
@@ -237,7 +239,7 @@ async fn prefix_remove(
 }
 
 /// List all custom prefixes for this server.
-#[poise::command(slash_command, prefix_command, rename = "list", guild_only)]
+#[poise::command(slash_command, prefix_command, rename = "list", aliases("view", "config"), guild_only)]
 async fn prefix_list(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
     let state = &ctx.data().state;

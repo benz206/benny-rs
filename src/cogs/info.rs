@@ -19,7 +19,7 @@ use std::sync::Arc;
 const AVATAR_DELETE_PREFIX: &str = "info:avatar:delete:";
 
 /// How many role mentions to list in a member card before truncating.
-const MAX_ROLES_SHOWN: usize = 20;
+const MAX_ROLES_SHOWN: usize = 42;
 
 pub struct InfoCog {
     state: Arc<AppState>,

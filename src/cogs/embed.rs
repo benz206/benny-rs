@@ -756,6 +756,7 @@ async fn embed(_ctx: Context<'_>) -> Result<(), Error> {
     guild_only,
     category = "Embed",
     rename = "new",
+    aliases("custom_embed", "cembed", "ce"),
     required_permissions = "MANAGE_MESSAGES"
 )]
 async fn embed_new(ctx: Context<'_>) -> Result<(), Error> {
