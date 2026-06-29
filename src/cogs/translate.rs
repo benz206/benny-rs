@@ -97,7 +97,7 @@ impl Cog for TranslateCog {
 }
 
 pub fn commands() -> Vec<poise::Command<Data, Error>> {
-    vec![translate()]
+    vec![translate(), translate_context_menu()]
 }
 
 // ---- commands ---------------------------------------------------------------
@@ -138,6 +138,46 @@ async fn translate(
             src: detected,
             dest: target_lang,
             origin: text,
+            translated,
+        },
+        MAX_STATES,
+    );
+    Ok(())
+}
+
+/// Right-click a message → Apps → Translate (to English, auto-detect source).
+#[poise::command(context_menu_command = "Translate", category = "Translate")]
+async fn translate_context_menu(
+    ctx: Context<'_>,
+    msg: serenity::all::Message,
+) -> Result<(), Error> {
+    if msg.content.is_empty() {
+        return send_error(ctx, "That message has no text content to translate.").await;
+    }
+
+    let state = &ctx.data().state;
+    let target_lang = "en".to_string();
+
+    let (detected, translated) = match translate_text(state, &msg.content, &target_lang).await {
+        Some(t) => t,
+        None => return send_error(ctx, "Translation service unavailable.").await,
+    };
+
+    let embed = build_embed(&detected, &target_lang, &msg.content, &translated);
+    let reply = poise::CreateReply::default()
+        .ephemeral(true)
+        .embed(embed)
+        .components(vec![buttons()]);
+
+    let handle = ctx.send(reply).await?;
+    let sent = handle.message().await?;
+    crate::utils::cache::bounded_insert(
+        &STATES,
+        sent.id,
+        TranslateState {
+            src: detected,
+            dest: target_lang,
+            origin: msg.content,
             translated,
         },
         MAX_STATES,
