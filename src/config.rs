@@ -31,6 +31,11 @@ pub struct BotConfig {
     /// this is belt-and-suspenders; `None` disables CORS entirely.
     #[serde(default)]
     pub dashboard_allowed_origin: Option<String>,
+    /// Address the dashboard `/api/v1` server binds to. Defaults to
+    /// `127.0.0.1:8080`. Set this when 8080 is taken (e.g. a tunnel forwards to
+    /// a different local port).
+    #[serde(default)]
+    pub dashboard_api_addr: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

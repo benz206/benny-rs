@@ -261,8 +261,15 @@ async fn main() -> Result<()> {
             anyhow::anyhow!(e)
         })?;
 
+    let api_addr: std::net::SocketAddr = state_for_http
+        .config
+        .dashboard_api_addr
+        .as_deref()
+        .unwrap_or("127.0.0.1:8080")
+        .parse()
+        .expect("dashboard_api_addr must be a valid host:port");
     let api = http::router(state_for_http);
-    tokio::spawn(http::serve(api, "127.0.0.1:8080".parse().unwrap()));
+    tokio::spawn(http::serve(api, api_addr));
 
     if let Err(e) = client.start().await {
         error!(error = ?e, "client exited with error");
