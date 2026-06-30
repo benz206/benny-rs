@@ -376,7 +376,7 @@ async fn welcome_channel(
 )]
 async fn welcome_message(
     ctx: Context<'_>,
-    #[description = "Message template. Variables: {member} {member.mention} {member.name} {member.id} {member.avatar} {server.name} {server.member_count}"]
+    #[description = "Message template. Supports TagScript variables like {member.mention} and {server.name}."]
     #[rest]
     template: String,
 ) -> Result<(), Error> {
@@ -539,7 +539,7 @@ async fn goodbye_channel(
 )]
 async fn goodbye_message(
     ctx: Context<'_>,
-    #[description = "Message template. Variables: {member} {member.mention} {member.name} {member.id} {member.avatar} {server.name} {server.member_count}"]
+    #[description = "Message template. Supports TagScript variables like {member.mention} and {server.name}."]
     #[rest]
     template: String,
 ) -> Result<(), Error> {
