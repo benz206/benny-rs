@@ -279,6 +279,7 @@ pub mod events;
 pub mod giveaways;
 pub mod help;
 pub mod info;
+pub mod levels;
 pub mod logging;
 pub mod moderation;
 pub mod music;

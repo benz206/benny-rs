@@ -68,13 +68,12 @@ impl Cog for GiveawaysCog {
             return;
         };
 
-        let found = match giveaways::Entity::find_by_id(giveaway_id)
-            .one(self.state.servers_orm())
-            .await
-        {
-            Ok(Some(g)) if !g.ended => true,
-            _ => false,
-        };
+        let found = matches!(
+            giveaways::Entity::find_by_id(giveaway_id)
+                .one(self.state.servers_orm())
+                .await,
+            Ok(Some(g)) if !g.ended
+        );
         if !found {
             let _ = interaction
                 .create_response(

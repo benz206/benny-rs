@@ -37,6 +37,7 @@ pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     cmds.extend(crate::cogs::sentinel::commands());
     cmds.extend(crate::cogs::automod::commands());
     cmds.extend(crate::cogs::giveaways::commands());
+    cmds.extend(crate::cogs::levels::commands());
     cmds.extend(crate::cogs::roles::commands());
     cmds.extend(crate::cogs::reminders::commands());
     cmds.extend(crate::cogs::premium::commands());
