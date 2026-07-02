@@ -20,6 +20,7 @@ impl MigratorTrait for ServersMigrator {
             Box::new(AddModCases),
             Box::new(AddWarnPolicy),
             Box::new(AddAutomod),
+            Box::new(AddEngagement),
         ]
     }
 }
@@ -300,6 +301,97 @@ impl MigrationTrait for AddAutomod {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         run_all(manager, &["DROP TABLE IF EXISTS automod_config"]).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// servers.db — engagement features: leveling/XP, starboard, giveaways.
+// ---------------------------------------------------------------------------
+struct AddEngagement;
+
+impl MigrationName for AddEngagement {
+    fn name(&self) -> &str {
+        "m20260702_000005_add_engagement"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddEngagement {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        run_all(
+            manager,
+            &[
+                "CREATE TABLE IF NOT EXISTS levels_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    announce INTEGER NOT NULL DEFAULT 1,
+                    levelup_channel_id INTEGER,
+                    xp_min INTEGER NOT NULL DEFAULT 15,
+                    xp_max INTEGER NOT NULL DEFAULT 25,
+                    cooldown_secs INTEGER NOT NULL DEFAULT 60
+                )",
+                "CREATE TABLE IF NOT EXISTS levels_users (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    xp INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, user_id)
+                )",
+                "CREATE TABLE IF NOT EXISTS levels_rewards (
+                    guild_id INTEGER NOT NULL,
+                    level INTEGER NOT NULL,
+                    role_id INTEGER NOT NULL,
+                    PRIMARY KEY (guild_id, level)
+                )",
+                "CREATE TABLE IF NOT EXISTS starboard_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    channel_id INTEGER,
+                    threshold INTEGER NOT NULL DEFAULT 3,
+                    emoji TEXT NOT NULL DEFAULT '⭐',
+                    self_star INTEGER NOT NULL DEFAULT 0
+                )",
+                "CREATE TABLE IF NOT EXISTS starboard_posts (
+                    guild_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    starboard_message_id INTEGER NOT NULL,
+                    star_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, message_id)
+                )",
+                "CREATE TABLE IF NOT EXISTS giveaways (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL DEFAULT 0,
+                    prize TEXT NOT NULL,
+                    winners INTEGER NOT NULL DEFAULT 1,
+                    host_id INTEGER NOT NULL,
+                    ends_at INTEGER NOT NULL,
+                    ended INTEGER NOT NULL DEFAULT 0
+                )",
+                "CREATE TABLE IF NOT EXISTS giveaway_entries (
+                    giveaway_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    PRIMARY KEY (giveaway_id, user_id)
+                )",
+            ],
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        run_all(
+            manager,
+            &[
+                "DROP TABLE IF EXISTS levels_config",
+                "DROP TABLE IF EXISTS levels_users",
+                "DROP TABLE IF EXISTS levels_rewards",
+                "DROP TABLE IF EXISTS starboard_config",
+                "DROP TABLE IF EXISTS starboard_posts",
+                "DROP TABLE IF EXISTS giveaways",
+                "DROP TABLE IF EXISTS giveaway_entries",
+            ],
+        )
+        .await
     }
 }
 

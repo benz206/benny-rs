@@ -36,6 +36,7 @@ pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     cmds.extend(crate::cogs::logging::commands());
     cmds.extend(crate::cogs::sentinel::commands());
     cmds.extend(crate::cogs::automod::commands());
+    cmds.extend(crate::cogs::giveaways::commands());
     cmds.extend(crate::cogs::roles::commands());
     cmds.extend(crate::cogs::reminders::commands());
     cmds.extend(crate::cogs::premium::commands());
@@ -190,6 +191,10 @@ pub async fn event_handler(
         }
         FullEvent::ReactionAdd { add_reaction } => {
             cogs.dispatch_reaction_add(ctx, add_reaction.clone()).await
+        }
+        FullEvent::ReactionRemove { removed_reaction } => {
+            cogs.dispatch_reaction_remove(ctx, removed_reaction.clone())
+                .await
         }
         FullEvent::GuildCreate { guild, .. } => cogs.dispatch_guild_create(ctx, guild).await,
         FullEvent::GuildDelete { incomplete, full } => {
