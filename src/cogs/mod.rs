@@ -290,6 +290,7 @@ pub mod reminders;
 pub mod roles;
 pub mod sentinel;
 pub mod settings;
+pub mod starboard;
 pub mod tags;
 pub mod translate;
 pub mod welcome;
