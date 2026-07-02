@@ -15,7 +15,11 @@ pub struct UsersMigrator;
 
 impl MigratorTrait for ServersMigrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(InitServers), Box::new(AddModCases)]
+        vec![
+            Box::new(InitServers),
+            Box::new(AddModCases),
+            Box::new(AddWarnPolicy),
+        ]
     }
 }
 
@@ -214,6 +218,45 @@ impl MigrationTrait for AddModCases {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         drop_all(manager, &["mod_cases"]).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// servers.db — warn-escalation policy on mod_config (auto-punish once a member
+// accumulates `warn_threshold` active warns; 0 = disabled).
+// ---------------------------------------------------------------------------
+struct AddWarnPolicy;
+
+impl MigrationName for AddWarnPolicy {
+    fn name(&self) -> &str {
+        "m20260702_000003_add_warn_policy"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddWarnPolicy {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        run_all(
+            manager,
+            &[
+                "ALTER TABLE mod_config ADD COLUMN warn_threshold INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE mod_config ADD COLUMN warn_action TEXT NOT NULL DEFAULT 'timeout'",
+                "ALTER TABLE mod_config ADD COLUMN warn_timeout_secs INTEGER NOT NULL DEFAULT 3600",
+            ],
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        run_all(
+            manager,
+            &[
+                "ALTER TABLE mod_config DROP COLUMN warn_threshold",
+                "ALTER TABLE mod_config DROP COLUMN warn_action",
+                "ALTER TABLE mod_config DROP COLUMN warn_timeout_secs",
+            ],
+        )
+        .await
     }
 }
 

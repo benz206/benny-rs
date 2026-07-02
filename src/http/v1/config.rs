@@ -734,6 +734,7 @@ async fn put_moderation(
     mod_config::Entity::insert(mod_config::ActiveModel {
         guild_id: Set(gid as i64),
         mute_role_id: Set(mute_role_id),
+        ..Default::default()
     })
     .on_conflict(
         OnConflict::column(mod_config::Column::GuildId)
