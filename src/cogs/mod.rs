@@ -263,6 +263,7 @@ impl CogManager {
 }
 
 pub mod afk;
+pub mod automod;
 pub mod base;
 pub mod dev;
 pub mod dictionary;

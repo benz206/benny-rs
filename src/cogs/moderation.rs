@@ -1241,7 +1241,7 @@ async fn fetch_name(ctx: &serenity::all::Context, user_id: u64) -> String {
 /// one transaction; the `(guild_id, case_number)` primary key is the final
 /// backstop against a duplicate should two actions ever race. Returns `None`
 /// only on a database error.
-async fn create_case(
+pub(crate) async fn create_case(
     state: &AppState,
     guild_id: GuildId,
     action_type: &str,
@@ -1436,7 +1436,7 @@ async fn record_timed(
 /// Natively time out a member, record the case, and register it with the
 /// expiry sweeper (Discord lifts the timeout itself; the sweeper only closes
 /// the case). Returns the case number, or an error message to surface.
-async fn apply_native_timeout(
+pub(crate) async fn apply_native_timeout(
     sctx: &serenity::all::Context,
     state: &AppState,
     guild_id: GuildId,

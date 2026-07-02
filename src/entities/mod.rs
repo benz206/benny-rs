@@ -9,6 +9,7 @@
 
 // servers.db
 pub mod afk;
+pub mod automod_config;
 pub mod goodbye_config;
 pub mod logging;
 pub mod mod_cases;

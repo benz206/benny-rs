@@ -131,11 +131,12 @@ async fn main() -> Result<()> {
         | GatewayIntents::DIRECT_MESSAGES;
 
     use cogs::{
-        CogManager, afk::AfkCog, base::BaseCog, dev::DevCog, dictionary::DictionaryCog,
-        embed::EmbedCog, events::EventsCog, help::HelpCog, info::InfoCog, logging::LoggingCog,
-        moderation::ModerationCog, music::MusicCog, ocr::OcrCog, prefixes::PrefixesCog,
-        premium::PremiumCog, reminders::RemindersCog, roles::RolesCog, sentinel::SentinelCog,
-        settings::SettingsCog, translate::TranslateCog, welcome::WelcomeCog,
+        CogManager, afk::AfkCog, automod::AutomodCog, base::BaseCog, dev::DevCog,
+        dictionary::DictionaryCog, embed::EmbedCog, events::EventsCog, help::HelpCog,
+        info::InfoCog, logging::LoggingCog, moderation::ModerationCog, music::MusicCog,
+        ocr::OcrCog, prefixes::PrefixesCog, premium::PremiumCog, reminders::RemindersCog,
+        roles::RolesCog, sentinel::SentinelCog, settings::SettingsCog, translate::TranslateCog,
+        welcome::WelcomeCog,
     };
 
     // Cogs own the gateway-event hooks (AFK, sentinel, logging, welcome, ...);
@@ -159,6 +160,7 @@ async fn main() -> Result<()> {
     manager.register(OcrCog::new(app_state.clone()));
     manager.register(EmbedCog::new(app_state.clone()));
     manager.register(SentinelCog::new(app_state.clone()));
+    manager.register(AutomodCog::new(app_state.clone()));
     manager.register(DevCog::new(app_state.clone()));
     manager.register(PremiumCog::new(app_state.clone()));
     manager.register(MusicCog::new(app_state.clone()));

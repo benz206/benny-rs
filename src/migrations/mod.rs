@@ -19,6 +19,7 @@ impl MigratorTrait for ServersMigrator {
             Box::new(InitServers),
             Box::new(AddModCases),
             Box::new(AddWarnPolicy),
+            Box::new(AddAutomod),
         ]
     }
 }
@@ -257,6 +258,48 @@ impl MigrationTrait for AddWarnPolicy {
             ],
         )
         .await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// servers.db — bot-side automod filters + anti-raid settings.
+// ---------------------------------------------------------------------------
+struct AddAutomod;
+
+impl MigrationName for AddAutomod {
+    fn name(&self) -> &str {
+        "m20260702_000004_add_automod"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddAutomod {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        run_all(
+            manager,
+            &["CREATE TABLE IF NOT EXISTS automod_config (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                log_channel_id INTEGER,
+                anti_invite INTEGER NOT NULL DEFAULT 1,
+                anti_link INTEGER NOT NULL DEFAULT 0,
+                mention_limit INTEGER NOT NULL DEFAULT 8,
+                spam_msgs INTEGER NOT NULL DEFAULT 8,
+                spam_secs INTEGER NOT NULL DEFAULT 5,
+                punishment TEXT NOT NULL DEFAULT 'delete',
+                timeout_secs INTEGER NOT NULL DEFAULT 600,
+                raid_enabled INTEGER NOT NULL DEFAULT 0,
+                raid_joins INTEGER NOT NULL DEFAULT 10,
+                raid_secs INTEGER NOT NULL DEFAULT 30,
+                min_account_age_days INTEGER NOT NULL DEFAULT 0,
+                raid_action TEXT NOT NULL DEFAULT 'alert'
+            )"],
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        run_all(manager, &["DROP TABLE IF EXISTS automod_config"]).await
     }
 }
 
