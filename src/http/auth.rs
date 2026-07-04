@@ -72,17 +72,28 @@ impl FromRequestParts<Arc<AppState>> for GuildScope {
 
 // ---- rate limiting ---------------------------------------------------------
 
-/// Fixed-window per-actor limiter. The actor set is small (dashboard service
-/// users), so unbounded growth is not a concern in practice.
+/// Fixed-window limiter keyed by actor id. `X-Actor-Id` is client-supplied, so
+/// the per-actor budget alone can be bypassed by rotating the header — the
+/// middleware pairs this with a global limiter (a single key) so one token
+/// holder can't multiply its budget that way. `cap` bounds the map so cycling
+/// ids can't grow it without bound.
 struct RateLimiter {
     window: Duration,
     max: u32,
+    cap: usize,
     hits: DashMap<u64, (Instant, u32)>,
 }
 
 impl RateLimiter {
     /// Record a hit for `key`; returns false once the window's budget is spent.
     fn allow(&self, key: u64) -> bool {
+        // Evict an arbitrary entry before admitting a brand-new key past the cap,
+        // so a caller rotating `X-Actor-Id` can't grow the map indefinitely.
+        if self.hits.len() >= self.cap && !self.hits.contains_key(&key) {
+            if let Some(victim) = self.hits.iter().next().map(|e| *e.key()) {
+                self.hits.remove(&victim);
+            }
+        }
         let mut e = self.hits.entry(key).or_insert((Instant::now(), 0));
         if e.0.elapsed() >= self.window {
             *e = (Instant::now(), 0);
@@ -96,6 +107,17 @@ impl RateLimiter {
 static RATE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(|| RateLimiter {
     window: Duration::from_secs(10),
     max: 100,
+    cap: 10_000,
+    hits: DashMap::new(),
+});
+
+/// Ceiling across ALL actors on the (single) API token: 1000 requests per 10s.
+/// Bounds total load and defeats per-actor-budget multiplication via header
+/// rotation. Keyed by a constant, so its map holds one entry.
+static GLOBAL_LIMITER: LazyLock<RateLimiter> = LazyLock::new(|| RateLimiter {
+    window: Duration::from_secs(10),
+    max: 1000,
+    cap: 4,
     hits: DashMap::new(),
 });
 
@@ -128,8 +150,10 @@ pub async fn auth_middleware(
         .and_then(|s| s.trim().parse::<u64>().ok())
         .ok_or_else(|| ApiError::bad_request("missing or invalid X-Actor-Id header"))?;
 
-    // 3. Cheap per-actor rate limit, before any DB work.
-    if !RATE_LIMITER.allow(actor) {
+    // 3. Cheap rate limits, before any DB work. The global limit is checked
+    // first so rotating `X-Actor-Id` to dodge the per-actor limit still hits a
+    // ceiling on the token as a whole.
+    if !GLOBAL_LIMITER.allow(0) || !RATE_LIMITER.allow(actor) {
         return Err(ApiError::TooManyRequests);
     }
 

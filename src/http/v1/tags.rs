@@ -13,7 +13,7 @@ use axum::{
     routing::get,
 };
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, QuerySelect, Set};
 use serde::{Deserialize, Serialize};
 
 use super::{audit, id_to_string};
@@ -26,6 +26,7 @@ use crate::state::{AppState, Tag};
 const RESERVED_NAMES: &[&str] = &["tag", "tagtest", "tt", "playground", "testtag"];
 const MAX_TAG_NAME_LEN: usize = 32;
 const MAX_TAG_CONTENT_LEN: usize = 2000;
+const MAX_LIMIT: u64 = 100;
 
 pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -79,6 +80,7 @@ async fn list_tags(
 ) -> ApiResult<Json<TagList>> {
     let rows = tags::Entity::find()
         .filter(tags::Column::GuildId.eq(gid as i64))
+        .limit(MAX_LIMIT)
         .all(state.servers_orm())
         .await?;
     Ok(Json(TagList {
