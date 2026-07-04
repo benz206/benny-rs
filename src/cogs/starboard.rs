@@ -9,6 +9,7 @@ use crate::framework::{Context, Data, Error, send_embed, send_error, send_plain}
 use crate::state::AppState;
 use crate::utils::colors;
 use crate::utils::format::truncate;
+use crate::utils::ratelimit::RateLimiter;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use sea_orm::sea_query::OnConflict;
@@ -18,9 +19,20 @@ use serenity::all::{
     Timestamp,
 };
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 /// Per-guild starboard configuration, mirrored from `starboard_config`.
 static CONFIG_CACHE: LazyLock<DashMap<u64, starboard_config::Model>> = LazyLock::new(DashMap::new);
+
+/// Collapse bursts of reactions on the *same* message into one recount. Without
+/// this, every add/remove fetches the message + its reactors (2 API calls), so a
+/// post rapidly gaining N stars fires ~2N calls and trips Discord's rate limit.
+/// Keyed by message id; size-capped so it can't grow without bound.
+static RECOUNT_LIMITER: LazyLock<RateLimiter<u64>> = LazyLock::new(|| RateLimiter::new(8192));
+
+/// Min gap between recounts of one message. Reactions cluster within a second or
+/// two, so this collapses a burst into a single fetch while staying responsive.
+const RECOUNT_INTERVAL: Duration = Duration::from_secs(4);
 
 pub struct StarboardCog {
     state: Arc<AppState>,
@@ -53,6 +65,16 @@ impl StarboardCog {
         }
         // Don't re-star posts already sitting in the starboard channel.
         if reaction.channel_id.get() == starboard_channel as u64 {
+            return;
+        }
+
+        // Throttle per message: a burst of stars collapses to one recount, both
+        // capping API calls and serializing the create-below so two concurrent
+        // reactions can't each post a duplicate starboard entry.
+        if RECOUNT_LIMITER
+            .check(reaction.message_id.get(), RECOUNT_INTERVAL)
+            .is_some()
+        {
             return;
         }
 

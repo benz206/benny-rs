@@ -28,9 +28,24 @@ static CONFIG_CACHE: LazyLock<DashMap<u64, automod_config::Model>> = LazyLock::n
 
 /// Recent message timestamps per (guild, user) for spam detection.
 static MSG_WINDOW: LazyLock<DashMap<(u64, u64), VecDeque<i64>>> = LazyLock::new(DashMap::new);
+const MSG_WINDOW_CAP: usize = 50_000;
 
 /// Recent join timestamps per guild for raid detection.
 static JOIN_WINDOW: LazyLock<DashMap<u64, VecDeque<i64>>> = LazyLock::new(DashMap::new);
+const JOIN_WINDOW_CAP: usize = 10_000;
+
+/// Evict one arbitrary entry from `map` before inserting a new key if the map
+/// is already at `cap`. `MSG_WINDOW`/`JOIN_WINDOW` values are mutated in place
+/// via `entry().or_default()`, so they can't go through
+/// [`crate::utils::cache::bounded_insert`] (which replaces the whole value);
+/// this mirrors its "evict arbitrary entries" approach instead.
+fn evict_if_full<K: Eq + std::hash::Hash + Clone, V>(map: &DashMap<K, V>, key: &K, cap: usize) {
+    if map.len() >= cap && !map.contains_key(key) {
+        if let Some(victim) = map.iter().next().map(|e| e.key().clone()) {
+            map.remove(&victim);
+        }
+    }
+}
 
 /// Substrings that identify a Discord invite link.
 const INVITE_MARKERS: [&str; 3] = ["discord.gg/", "discord.com/invite/", "discordapp.com/invite/"];
@@ -212,6 +227,7 @@ impl Cog for AutomodCog {
         // Join-rate raid detection.
         if cfg.raid_joins > 0 && cfg.raid_secs > 0 {
             let count = {
+                evict_if_full(&JOIN_WINDOW, &gid, JOIN_WINDOW_CAP);
                 let mut w = JOIN_WINDOW.entry(gid).or_default();
                 w.push_back(now);
                 while w.front().is_some_and(|t| now - t >= cfg.raid_secs) {
@@ -272,7 +288,9 @@ fn is_spamming(cfg: &automod_config::Model, gid: u64, uid: u64) -> bool {
         return false;
     }
     let now = Utc::now().timestamp();
-    let mut w = MSG_WINDOW.entry((gid, uid)).or_default();
+    let key = (gid, uid);
+    evict_if_full(&MSG_WINDOW, &key, MSG_WINDOW_CAP);
+    let mut w = MSG_WINDOW.entry(key).or_default();
     w.push_back(now);
     while w.front().is_some_and(|t| now - *t >= cfg.spam_secs) {
         w.pop_front();

@@ -20,6 +20,7 @@ use serenity::all::{
 use serenity::prelude::Mentionable;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// custom_id namespace for this cog's interactive components. Every component
 /// handled here is prefixed with this; `on_component` early-returns otherwise.
@@ -245,12 +246,13 @@ impl WelcomeCog {
         else {
             return;
         };
-        for part in m.role_ids.split(',') {
+        for part in m.role_ids.split(',').take(MAX_AUTOROLES) {
             if let Ok(rid) = part.trim().parse::<u64>() {
                 let _ = ctx
                     .http
                     .add_member_role(guild_id, user_id, RoleId::new(rid), Some("Sticky role"))
                     .await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
     }
