@@ -5,7 +5,7 @@ use crate::state::AppState;
 use crate::utils::format;
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{ColumnTrait, EntityTrait, Order, QueryFilter, QueryOrder, Set};
+use sea_orm::{ColumnTrait, EntityTrait, Order, QueryFilter, QueryOrder, QuerySelect, Set};
 use serenity::all::{Colour, CreateEmbed, CreateMessage, Timestamp};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -276,6 +276,7 @@ async fn premium_tokens_list(ctx: Context<'_>) -> Result<(), Error> {
     let rows = premium_tokens::Entity::find()
         .order_by(premium_tokens::Column::Redeemed, Order::Asc)
         .order_by(premium_tokens::Column::Token, Order::Asc)
+        .limit(100)
         .all(state.users_orm())
         .await
         .unwrap_or_default();

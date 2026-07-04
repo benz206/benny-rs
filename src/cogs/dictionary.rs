@@ -279,9 +279,15 @@ async fn fetch_word(
         .pop_if_empty()
         .push(word);
     let resp = client.get(url).send().await?;
-    let status = resp.status().as_u16();
+    let status = resp.status();
+    // Only 200 (found) and 404 (not found) reliably return a JSON body from
+    // this API; other statuses (e.g. rate-limited/5xx) may return plain text
+    // or HTML, so surface those as an error instead of parsing them as JSON.
+    if !status.is_success() && status.as_u16() != 404 {
+        return Err(resp.error_for_status().unwrap_err());
+    }
     let json = resp.json::<serde_json::Value>().await?;
-    Ok((status, json))
+    Ok((status.as_u16(), json))
 }
 
 /// The dropdown of meanings: up to 25 options, label is the part of speech,

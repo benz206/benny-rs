@@ -49,6 +49,14 @@ async fn ocr(
         return send_error(ctx, "Please provide an image or url to read.").await;
     };
 
+    if !is_allowed_image_url(&image_url) {
+        return send_error(
+            ctx,
+            "That URL isn't allowed. Please attach an image or use a Discord CDN link.",
+        )
+        .await;
+    }
+
     let sctx = ctx.serenity_context();
     let state = &ctx.data().state;
 
@@ -76,6 +84,12 @@ async fn ocr(
             return Ok(());
         }
     };
+
+    if !resp.status().is_success() {
+        tracing::error!(status = %resp.status(), "OCR service returned a non-success status");
+        ctx.say("OCR service unavailable or rate-limited.").await?;
+        return Ok(());
+    }
 
     let json = match resp.json::<serde_json::Value>().await {
         Ok(json) => json,
@@ -143,6 +157,25 @@ async fn ocr(
     }
 
     Ok(())
+}
+
+/// Whether a raw URL may be handed to the ocr.space API to fetch. The OCR
+/// service fetches the URL server-side, so an unrestricted URL is an SSRF
+/// vector (internal hosts, link-local metadata, etc.); only the Discord CDN
+/// is allowed.
+fn is_allowed_image_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    const ALLOWED: &[&str] = &["cdn.discordapp.com", "media.discordapp.net"];
+    ALLOWED.iter().any(|d| host == *d)
 }
 
 /// Upload text to mystb.in, returning the paste link on success.

@@ -21,6 +21,21 @@ pub struct BotConfig {
     pub support_guild: Option<u64>,
     #[serde(default)]
     pub sentiment_api_url: Option<String>,
+    /// Bearer token the dashboard's backend must present on every `/api/v1`
+    /// request. When `None` (the default) the dashboard API is not mounted at
+    /// all — secure by default. Generate one with `openssl rand -hex 32`.
+    #[serde(default)]
+    pub dashboard_api_token: Option<String>,
+    /// Origin allowed to call `/api/v1` from a browser (CORS allowlist), e.g.
+    /// `https://dashboard.example.com`. The dashboard uses a server-side BFF so
+    /// this is belt-and-suspenders; `None` disables CORS entirely.
+    #[serde(default)]
+    pub dashboard_allowed_origin: Option<String>,
+    /// Address the dashboard `/api/v1` server binds to. Defaults to
+    /// `127.0.0.1:8080`. Set this when 8080 is taken (e.g. a tunnel forwards to
+    /// a different local port).
+    #[serde(default)]
+    pub dashboard_api_addr: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

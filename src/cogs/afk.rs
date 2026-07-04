@@ -134,37 +134,36 @@ impl AfkCog {
         let user_id = msg.author.id.get();
 
         // Author sent a message → clear their AFK if >3s have elapsed since it was set.
-        let own = self
+        let expired = self
             .state
             .afk_cache
             .get(&(guild_id, user_id))
-            .map(|e| e.clone());
-        if let Some(entry) = own {
-            if entry.set_at + 3 < now {
-                self.state.afk_cache.remove(&(guild_id, user_id));
-                let _ = afk::Entity::delete_many()
-                    .filter(afk::Column::GuildId.eq(guild_id as i64))
-                    .filter(afk::Column::UserId.eq(user_id as i64))
-                    .exec(self.state.servers_orm())
-                    .await;
+            .map(|e| e.clone())
+            .filter(|entry| entry.set_at + 3 < now);
+        if let Some(entry) = expired
+            && self.state.afk_cache.remove(&(guild_id, user_id)).is_some()
+        {
+            let _ = afk::Entity::delete_many()
+                .filter(afk::Column::GuildId.eq(guild_id as i64))
+                .filter(afk::Column::UserId.eq(user_id as i64))
+                .exec(self.state.servers_orm())
+                .await;
 
-                let dur =
-                    humanize_duration(Duration::from_secs((now - entry.set_at).max(0) as u64));
-                let embed = CreateEmbed::new()
-                    .title("Removed AFK")
-                    .description(format!(
-                        "Welcome back <@{user_id}>!\n\nYou've been AFK for {dur}."
-                    ))
-                    .color(PINK)
-                    .timestamp(Timestamp::now());
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new().embed(embed).reference_message(msg),
-                    )
-                    .await;
-            }
+            let dur = humanize_duration(Duration::from_secs((now - entry.set_at).max(0) as u64));
+            let embed = CreateEmbed::new()
+                .title("Removed AFK")
+                .description(format!(
+                    "Welcome back <@{user_id}>!\n\nYou've been AFK for {dur}."
+                ))
+                .color(PINK)
+                .timestamp(Timestamp::now());
+            let _ = msg
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new().embed(embed).reference_message(msg),
+                )
+                .await;
         }
 
         // Notify about any AFK users mentioned in this message (first 3, never self).

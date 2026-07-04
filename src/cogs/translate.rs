@@ -204,6 +204,10 @@ async fn translate_text(state: &AppState, text: &str, target: &str) -> Option<(S
         .await
         .ok()?;
 
+    if !response.status().is_success() {
+        return None;
+    }
+
     // Response format: [[["translated","original",...],...],null,"detected_lang",...]
     let json: serde_json::Value = response.json().await.ok()?;
     let translated = json.get(0).and_then(|arr| arr.as_array()).map(|chunks| {

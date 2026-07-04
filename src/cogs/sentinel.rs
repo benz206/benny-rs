@@ -1132,6 +1132,30 @@ async fn set_decancer_enabled(state: &AppState, guild_id: u64, enabled: bool) {
     e.enabled = enabled;
 }
 
+// ---- dashboard API cache-sync accessors ------------------------------------
+//
+// `DELETE_FLAGS` and `DECANCER_CACHE` are module-private hot-path caches owned
+// by this cog. The dashboard API writes the same DB rows from an HTTP handler,
+// so it must keep these in sync too (same contract the cog upholds inline). It
+// funnels those updates through these `pub` setters rather than reaching into
+// the statics directly.
+
+/// Mirror a `delete_flagged` write into the hot-path cache.
+pub fn cache_set_delete_flagged(guild_id: u64, enabled: bool) {
+    DELETE_FLAGS.insert(guild_id, enabled);
+}
+
+/// Mirror a decancer-config write into the hot-path cache.
+pub fn cache_set_decancer(guild_id: u64, enabled: bool, log_channel_id: Option<i64>) {
+    DECANCER_CACHE.insert(
+        guild_id,
+        DecancerConfig {
+            enabled,
+            log_channel_id,
+        },
+    );
+}
+
 // ---- free helpers ----------------------------------------------------------
 
 fn default_config() -> SentinelConfig {

@@ -79,6 +79,15 @@ pub struct AppState {
     pub welcome_cache: Arc<DashMap<u64, WelcomeConfig>>,
     pub goodbye_cache: Arc<DashMap<u64, GoodbyeConfig>>,
     pub logging_cache: Arc<DashMap<u64, LoggingConfig>>,
+    /// Set of guild ids the bot is currently a member of. Serenity's cache is
+    /// the source of truth on the gateway side, but an HTTP handler has no
+    /// serenity `Context`; this mirror (hydrated at `ready`, maintained on
+    /// guild join/leave in `cogs::events`) lets the dashboard API answer
+    /// "is the bot in this guild?" without one. Used as a set; the unit value
+    /// is irrelevant.
+    pub guild_set: Arc<DashMap<u64, ()>>,
+    /// The bot's own user id, set once at `ready`. None until then.
+    pub bot_id: Arc<tokio::sync::OnceCell<u64>>,
     /// Lavalink client, set once at `ready` (see `cogs::music`). Empty until then,
     /// so the bot runs fine without a Lavalink server.
     pub lavalink: Arc<tokio::sync::OnceCell<lavalink_rs::client::LavalinkClient>>,
@@ -111,6 +120,8 @@ impl AppState {
             welcome_cache: Arc::new(DashMap::new()),
             goodbye_cache: Arc::new(DashMap::new()),
             logging_cache: Arc::new(DashMap::new()),
+            guild_set: Arc::new(DashMap::new()),
+            bot_id: Arc::new(tokio::sync::OnceCell::new()),
             lavalink: Arc::new(tokio::sync::OnceCell::new()),
             latency_ms: Arc::new(Mutex::new(Vec::with_capacity(64))),
             start_time: Instant::now(),
@@ -180,6 +191,12 @@ impl AppState {
     }
     pub fn is_owner(&self, user_id: u64) -> bool {
         self.config.owners.contains(&user_id)
+    }
+    /// Whether the bot is currently a member of `guild_id`, per the `guild_set`
+    /// mirror. Used by the dashboard API to 404 guild-scoped routes for guilds
+    /// the bot isn't in (an HTTP handler has no serenity cache to consult).
+    pub fn in_guild(&self, guild_id: u64) -> bool {
+        self.guild_set.contains_key(&guild_id)
     }
     /// The Lavalink client, if it has been initialized at `ready`.
     pub fn lavalink(&self) -> Option<lavalink_rs::client::LavalinkClient> {

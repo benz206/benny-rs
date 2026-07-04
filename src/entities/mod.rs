@@ -9,6 +9,12 @@
 
 // servers.db
 pub mod afk;
+pub mod automod_config;
+pub mod giveaway_entries;
+pub mod giveaways;
+pub mod levels_config;
+pub mod levels_rewards;
+pub mod levels_users;
 pub mod goodbye_config;
 pub mod logging;
 pub mod mod_cases;
@@ -17,6 +23,8 @@ pub mod mod_timed;
 pub mod prefixes;
 pub mod sentinel_config;
 pub mod sentinels_decancer;
+pub mod starboard_config;
+pub mod starboard_posts;
 pub mod sticky_roles;
 pub mod sticky_roles_config;
 pub mod tags;

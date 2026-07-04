@@ -49,6 +49,7 @@ pub trait Cog: Send + Sync {
     ) {
     }
     async fn on_reaction_add(&self, _ctx: &Context, _reaction: Reaction) {}
+    async fn on_reaction_remove(&self, _ctx: &Context, _reaction: Reaction) {}
     async fn on_guild_create(&self, _ctx: &Context, _guild: &Guild) {}
     async fn on_guild_delete(
         &self,
@@ -150,6 +151,12 @@ impl CogManager {
     pub async fn dispatch_reaction_add(&self, ctx: &Context, reaction: Reaction) {
         for cog in &self.cogs {
             cog.on_reaction_add(ctx, reaction.clone()).await;
+        }
+    }
+
+    pub async fn dispatch_reaction_remove(&self, ctx: &Context, reaction: Reaction) {
+        for cog in &self.cogs {
+            cog.on_reaction_remove(ctx, reaction.clone()).await;
         }
     }
 
@@ -263,13 +270,16 @@ impl CogManager {
 }
 
 pub mod afk;
+pub mod automod;
 pub mod base;
 pub mod dev;
 pub mod dictionary;
 pub mod embed;
 pub mod events;
+pub mod giveaways;
 pub mod help;
 pub mod info;
+pub mod levels;
 pub mod logging;
 pub mod moderation;
 pub mod music;
@@ -280,6 +290,7 @@ pub mod reminders;
 pub mod roles;
 pub mod sentinel;
 pub mod settings;
+pub mod starboard;
 pub mod tags;
 pub mod translate;
 pub mod welcome;

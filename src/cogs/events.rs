@@ -1,6 +1,7 @@
 use super::Cog;
 use crate::state::AppState;
 use crate::utils::colors;
+use crate::utils::ratelimit::RateLimiter;
 use async_trait::async_trait;
 use serenity::all::{
     ChannelType, Context, CreateEmbed, CreateMessage, Guild, GuildChannel, GuildId, Message,
@@ -8,8 +9,13 @@ use serenity::all::{
 };
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 use tracing::{info, warn};
+
+/// Throttles thread auto-join to at most once per guild per window, so a
+/// burst of thread creations doesn't fire an unthrottled HTTP call per thread.
+static THREAD_JOIN_LIMITER: LazyLock<RateLimiter<u64>> = LazyLock::new(|| RateLimiter::new(8192));
 
 /// Bot lifecycle / internals cog: auto-leave policy, thread auto-join,
 /// command logging, and guild join/remove logging.
@@ -124,6 +130,10 @@ impl Cog for EventsCog {
     }
 
     async fn on_guild_create(&self, ctx: &Context, guild: &Guild) {
+        // Keep the dashboard API's membership mirror current for every
+        // guild_create (genuine join, startup sync, or reconnect) — idempotent.
+        self.state.guild_set.insert(guild.id.get(), ());
+
         // Only act on genuine joins, never the startup/reconnect guild sync.
         if !self.ready_seen.load(Ordering::SeqCst) {
             return;
@@ -177,6 +187,8 @@ impl Cog for EventsCog {
         if incomplete.unavailable {
             return;
         }
+        // A genuine removal — drop it from the dashboard API membership mirror.
+        self.state.guild_set.remove(&incomplete.id.get());
         // Forget the guild so a future re-join is detected as a genuine join.
         if let Ok(mut known) = self.known_guilds.lock() {
             known.remove(&incomplete.id);
@@ -194,7 +206,13 @@ impl Cog for EventsCog {
     }
 
     async fn on_thread_create(&self, ctx: &Context, thread: &GuildChannel) {
-        // Whenever possible, join newly created threads.
+        // Whenever possible, join newly created threads (throttled per guild).
+        if THREAD_JOIN_LIMITER
+            .check(thread.guild_id.get(), Duration::from_secs(5))
+            .is_some()
+        {
+            return;
+        }
         if let Err(e) = ctx.http.join_thread_channel(thread.id).await {
             warn!("Failed to join thread {} ({}): {e}", thread.name, thread.id);
         }

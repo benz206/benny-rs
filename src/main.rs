@@ -131,11 +131,13 @@ async fn main() -> Result<()> {
         | GatewayIntents::DIRECT_MESSAGES;
 
     use cogs::{
-        CogManager, afk::AfkCog, base::BaseCog, dev::DevCog, dictionary::DictionaryCog,
-        embed::EmbedCog, events::EventsCog, help::HelpCog, info::InfoCog, logging::LoggingCog,
+        CogManager, afk::AfkCog, automod::AutomodCog, base::BaseCog, dev::DevCog,
+        dictionary::DictionaryCog, embed::EmbedCog, events::EventsCog, giveaways::GiveawaysCog,
+        help::HelpCog, info::InfoCog, levels::LevelsCog, logging::LoggingCog,
         moderation::ModerationCog, music::MusicCog, ocr::OcrCog, prefixes::PrefixesCog,
         premium::PremiumCog, reminders::RemindersCog, roles::RolesCog, sentinel::SentinelCog,
-        settings::SettingsCog, translate::TranslateCog, welcome::WelcomeCog,
+        settings::SettingsCog, starboard::StarboardCog, translate::TranslateCog,
+        welcome::WelcomeCog,
     };
 
     // Cogs own the gateway-event hooks (AFK, sentinel, logging, welcome, ...);
@@ -159,6 +161,10 @@ async fn main() -> Result<()> {
     manager.register(OcrCog::new(app_state.clone()));
     manager.register(EmbedCog::new(app_state.clone()));
     manager.register(SentinelCog::new(app_state.clone()));
+    manager.register(AutomodCog::new(app_state.clone()));
+    manager.register(GiveawaysCog::new(app_state.clone()));
+    manager.register(LevelsCog::new(app_state.clone()));
+    manager.register(StarboardCog::new(app_state.clone()));
     manager.register(DevCog::new(app_state.clone()));
     manager.register(PremiumCog::new(app_state.clone()));
     manager.register(MusicCog::new(app_state.clone()));
@@ -210,6 +216,15 @@ async fn main() -> Result<()> {
                 info!("  Guilds: {}", ctx.cache.guilds().len());
                 info!("===========================================");
 
+                // Mirror the bot's identity and current guild membership into
+                // shared state so the dashboard HTTP API (which has no serenity
+                // Context) can authorize guild-scoped routes. `cogs::events`
+                // keeps `guild_set` current on later joins/leaves.
+                let _ = state.bot_id.set(ready.user.id.get());
+                for gid in ctx.cache.guilds() {
+                    state.guild_set.insert(gid.get(), ());
+                }
+
                 // Build the help menu from the registered command set.
                 cogs::help::init_help_index(&fw.options().commands);
 
@@ -252,8 +267,15 @@ async fn main() -> Result<()> {
             anyhow::anyhow!(e)
         })?;
 
+    let api_addr: std::net::SocketAddr = state_for_http
+        .config
+        .dashboard_api_addr
+        .as_deref()
+        .unwrap_or("127.0.0.1:8080")
+        .parse()
+        .expect("dashboard_api_addr must be a valid host:port");
     let api = http::router(state_for_http);
-    tokio::spawn(http::serve(api, "127.0.0.1:8080".parse().unwrap()));
+    tokio::spawn(http::serve(api, api_addr));
 
     if let Err(e) = client.start().await {
         error!(error = ?e, "client exited with error");

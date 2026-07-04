@@ -52,14 +52,35 @@ async fn send_log(state: &AppState, guild_id: u64, payload: serde_json::Value) {
         _ => return,
     };
 
-    if let Err(e) = state
-        .http
-        .post(&config.webhook_url)
-        .json(&payload)
-        .send()
-        .await
-    {
-        error!(error = ?e, guild_id, "failed to send log webhook");
+    // reqwest returns `Ok` for 4xx/5xx, so a rate-limited (429) or deleted (404)
+    // webhook would otherwise fail completely silently. This webhook lives in its
+    // own Discord bucket that serenity's rate limiter does not manage, so post it
+    // ourselves and, on a 429, honor `Retry-After` for a single retry before
+    // giving up. Anything else non-2xx is logged rather than swallowed.
+    for attempt in 0..2 {
+        match state.http.post(&config.webhook_url).json(&payload).send().await {
+            Ok(r) if r.status().is_success() => return,
+            Ok(r)
+                if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt == 0 =>
+            {
+                let retry_after = r
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(1.0)
+                    .clamp(0.0, 5.0);
+                tokio::time::sleep(std::time::Duration::from_secs_f64(retry_after)).await;
+            }
+            Ok(r) => {
+                error!(status = %r.status(), guild_id, "log webhook rejected the request");
+                return;
+            }
+            Err(e) => {
+                error!(error = ?e, guild_id, "failed to send log webhook");
+                return;
+            }
+        }
     }
 }
 
