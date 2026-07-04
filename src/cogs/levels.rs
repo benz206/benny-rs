@@ -145,7 +145,7 @@ impl Cog for LevelsCog {
             .map(|r| r.clone())
             .unwrap_or_default();
         for (level, role_id) in rewards {
-            if level <= new_level {
+            if level > old_level && level <= new_level {
                 let _ = ctx
                     .http
                     .add_member_role(

@@ -15,9 +15,10 @@ use sea_orm::{
 };
 use serenity::all::{
     Channel, Colour, CreateEmbed, CreateEmbedFooter, EditChannel, EditMember, EditRole,
-    GetMessages, GuildId, Http, MessageId, PermissionOverwrite, PermissionOverwriteType,
-    Permissions, RoleId, Timestamp, User, UserId,
+    GetMessages, GuildId, Http, HttpError, MessageId, PermissionOverwrite,
+    PermissionOverwriteType, Permissions, RoleId, Timestamp, User, UserId,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::{Duration, sleep};
@@ -1641,6 +1642,21 @@ fn case_embed(case: &mod_cases::Model) -> CreateEmbed {
     embed
 }
 
+/// Whether a failed lift should be retried on the next sweep rather than
+/// dropped. Only transient conditions (rate limit, 5xx, network) are retried;
+/// definitive errors (unknown ban/member, missing access) clear the row so the
+/// sweeper can't loop forever on a target it can never act on.
+fn should_retry_lift(err: &serenity::Error) -> bool {
+    match err {
+        serenity::Error::Http(HttpError::UnsuccessfulRequest(resp)) => {
+            let code = resp.status_code.as_u16();
+            code == 429 || code >= 500
+        }
+        serenity::Error::Http(HttpError::Request(_)) => true,
+        _ => false,
+    }
+}
+
 /// Background sweeper: every `EXPIRY_INTERVAL_SECS` it lifts any timed
 /// infraction whose `expires_at` has passed (removes the Muted role for mutes,
 /// unbans for temp-bans), marks the logged case inactive, and clears the row.
@@ -1662,6 +1678,10 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
                 }
             };
 
+            // Cache each guild's mute-role id so a batch of mutes expiring
+            // together doesn't re-query `mod_config` once per row.
+            let mut mute_role_cache: HashMap<i64, Option<i64>> = HashMap::new();
+
             for row in rows {
                 let mod_timed::Model {
                     guild_id: gid,
@@ -1673,37 +1693,56 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
                 let guild_id = GuildId::new(gid as u64);
                 let user_id = UserId::new(uid as u64);
 
-                let lifted = match action.as_str() {
+                let result: serenity::Result<()> = match action.as_str() {
                     "mute" => {
-                        let role: Option<i64> = mod_config::Entity::find_by_id(gid)
-                            .one(state.servers_orm())
-                            .await
-                            .ok()
-                            .flatten()
-                            .and_then(|m| m.mute_role_id);
+                        let role = match mute_role_cache.get(&gid) {
+                            Some(r) => *r,
+                            None => {
+                                let r = mod_config::Entity::find_by_id(gid)
+                                    .one(state.servers_orm())
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|m| m.mute_role_id);
+                                mute_role_cache.insert(gid, r);
+                                r
+                            }
+                        };
                         match role {
-                            Some(rid) => http
-                                .remove_member_role(
+                            Some(rid) => {
+                                http.remove_member_role(
                                     guild_id,
                                     user_id,
                                     RoleId::new(rid as u64),
                                     Some("Mute expired"),
                                 )
                                 .await
-                                .is_ok(),
+                            }
                             // No role on record: nothing to undo.
-                            None => true,
+                            None => Ok(()),
                         }
                     }
-                    "ban" => http
-                        .remove_ban(guild_id, user_id, Some("Temp-ban expired"))
-                        .await
-                        .is_ok(),
-                    _ => true,
+                    "ban" => {
+                        http.remove_ban(guild_id, user_id, Some("Temp-ban expired"))
+                            .await
+                    }
+                    _ => Ok(()),
                 };
 
-                // Always clear the row (a permanently failing target — e.g. a
-                // user who already left — must not wedge the sweeper).
+                // A transient failure (rate limit, 5xx, network) must NOT clear
+                // the row — otherwise a temp-ban that failed to lift once would
+                // leave the user banned forever. Keep it and retry next sweep.
+                // Definitive failures (target already gone, missing access) fall
+                // through and clear the row so the sweeper can't wedge on them.
+                if let Err(e) = &result
+                    && should_retry_lift(e)
+                {
+                    tracing::warn!(guild = gid, case = case_number, action = %action, error = %e, "failed to lift infraction; will retry next sweep");
+                    sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+
+                // Clear the row.
                 let _ = mod_timed::Entity::delete_many()
                     .filter(mod_timed::Column::GuildId.eq(gid))
                     .filter(mod_timed::Column::CaseNumber.eq(case_number))
@@ -1718,9 +1757,13 @@ fn spawn_expiry_task(state: Arc<AppState>, http: Arc<Http>) {
                     .exec(state.servers_orm())
                     .await;
 
-                if !lifted {
-                    tracing::warn!(guild = gid, case = case_number, action = %action, "failed to lift infraction");
+                if let Err(e) = &result {
+                    tracing::warn!(guild = gid, case = case_number, action = %action, error = %e, "gave up lifting infraction (target likely gone)");
                 }
+
+                // Pace the loop so a batch of simultaneous expiries doesn't burst
+                // the Discord API.
+                sleep(Duration::from_millis(200)).await;
             }
         }
     });

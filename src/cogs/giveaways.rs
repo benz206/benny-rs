@@ -166,6 +166,27 @@ async fn finish_giveaway(state: &AppState, http: &Http, gw: &giveaways::Model, r
             gw.prize
         )
     };
+    // Mark the giveaway ended BEFORE announcing. If we announced first and the
+    // DB write then failed (or the process restarted in between), the sweeper
+    // would re-run `finish_giveaway` on the next pass and draw a *fresh* random
+    // set of winners — announcing a different result every 30s. Reroll must
+    // leave `ended` untouched so the original giveaway stays closed.
+    if !reroll {
+        if let Err(e) = giveaways::Entity::update_many()
+            .col_expr(giveaways::Column::Ended, Expr::value(true))
+            .filter(giveaways::Column::Id.eq(gw.id))
+            .exec(state.servers_orm())
+            .await
+        {
+            tracing::error!(
+                error = ?e,
+                id = gw.id,
+                "failed to mark giveaway ended; skipping announce to avoid re-draw",
+            );
+            return;
+        }
+    }
+
     let _ = channel_id
         .send_message(http, CreateMessage::new().content(announcement))
         .await;
@@ -173,12 +194,6 @@ async fn finish_giveaway(state: &AppState, http: &Http, gw: &giveaways::Model, r
     if reroll {
         return;
     }
-
-    let _ = giveaways::Entity::update_many()
-        .col_expr(giveaways::Column::Ended, Expr::value(true))
-        .filter(giveaways::Column::Id.eq(gw.id))
-        .exec(state.servers_orm())
-        .await;
 
     if gw.message_id != 0 {
         let embed = CreateEmbed::new()
@@ -224,8 +239,11 @@ fn spawn_sweeper_task(state: Arc<AppState>, http: Arc<Http>) {
                 }
             };
 
+            // Normally only a few end per 30s tick, but a backlog after downtime
+            // could make this a burst of send+edit calls — space them out.
             for gw in &rows {
                 finish_giveaway(&state, &http, gw, false).await;
+                sleep(Duration::from_millis(500)).await;
             }
         }
     });
