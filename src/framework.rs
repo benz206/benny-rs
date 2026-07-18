@@ -255,7 +255,8 @@ pub async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
             error = %error,
             "command returned an error",
         );
-        let _ = ctx.say(format!("Something went wrong: {error}")).await;
+        // Details go to the log only — raw error text can leak internals.
+        let _ = send_error(ctx, "Something went wrong while running that command.").await;
     } else if let Err(e) = poise::builtins::on_error(error).await {
         tracing::error!(error = %e, "error while handling a framework error");
     }
