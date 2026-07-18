@@ -34,10 +34,11 @@ The single shared state passed via `Arc<AppState>` into every cog constructor. C
 
 The `Cog` trait defines 11 event hooks (all default no-ops). `CogManager` holds a `Vec<Arc<dyn Cog>>` and fans out each Discord event to every registered cog. Cogs capture `Arc<AppState>` in their constructor — the trait method signatures never carry state.
 
-To add a new cog:
-1. Create `src/cogs/my_cog.rs` implementing `Cog`
-2. Add `pub mod my_cog;` to `src/cogs/mod.rs`
-3. Register `MyCog::new(app_state.clone())` in `main.rs`
+Cog registration is consolidated in `src/cogs/mod.rs`: `build_manager()` wires event hooks and `all_commands()` collects poise commands. To add a new cog:
+1. Create `src/cogs/my_cog.rs` implementing `Cog` (or a `src/cogs/my_cog/` directory for large cogs — see `embed/`)
+2. In `src/cogs/mod.rs`: add `pub mod my_cog;`, one line in `build_manager()`, and one line in `all_commands()`
+
+Shared helpers live in `src/utils/`: `embeds` (standard embeds + `json_to_embed`), `interactions` (ephemeral component/modal replies), `config` (`apply_setting` upsert wrapper + `hydrate_cache` for on_ready cache loads), plus `parse`, `perms`, `format`, `time`, `colors`, `cache`, `ratelimit`, `roles`. Check there before hand-rolling a reply, permission check, or config upsert in a cog.
 
 ### Database
 
