@@ -5,9 +5,10 @@
 
 use super::Cog;
 use crate::entities::{starboard_config, starboard_posts};
-use crate::framework::{Context, Data, Error, send_embed, send_error, send_plain};
+use crate::framework::{Context, Data, Error, send_embed};
 use crate::state::AppState;
 use crate::utils::colors;
+use crate::utils::config;
 use crate::utils::format::truncate;
 use crate::utils::ratelimit::RateLimiter;
 use async_trait::async_trait;
@@ -188,13 +189,13 @@ impl StarboardCog {
 #[async_trait]
 impl Cog for StarboardCog {
     async fn on_ready(&self, _ctx: &serenity::all::Context) {
-        let rows = starboard_config::Entity::find()
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-        for m in rows {
-            CONFIG_CACHE.insert(m.guild_id as u64, m);
-        }
+        config::hydrate_cache::<starboard_config::Entity, _>(
+            self.state.servers_orm(),
+            &CONFIG_CACHE,
+            |m| m.guild_id as u64,
+            |m| m,
+        )
+        .await;
         tracing::info!("Starboard cache loaded ({} guild(s))", CONFIG_CACHE.len());
     }
 
@@ -269,13 +270,14 @@ async fn apply_setting<F: FnOnce(&mut starboard_config::Model)>(
     msg: String,
 ) -> Result<(), Error> {
     let gid = ctx.guild_id().unwrap().get();
-    match update_config(&ctx.data().state, gid, f).await {
-        Ok(_) => send_plain(ctx, msg).await,
-        Err(e) => {
-            tracing::error!(error = ?e, "failed to save starboard config");
-            send_error(ctx, "Failed to save starboard config.").await
-        }
-    }
+    config::apply_setting(
+        ctx,
+        "starboard",
+        msg,
+        "Failed to save starboard config.",
+        update_config(&ctx.data().state, gid, f),
+    )
+    .await
 }
 
 // ---- commands ---------------------------------------------------------------

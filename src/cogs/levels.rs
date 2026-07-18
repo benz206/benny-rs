@@ -6,7 +6,7 @@ use super::Cog;
 use crate::entities::{levels_config, levels_rewards, levels_users};
 use crate::framework::{Context, Data, Error, send_embed, send_error, send_plain};
 use crate::state::AppState;
-use crate::utils::colors;
+use crate::utils::{colors, config};
 use crate::utils::ratelimit::RateLimiter;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -42,13 +42,13 @@ impl LevelsCog {
 #[async_trait]
 impl Cog for LevelsCog {
     async fn on_ready(&self, _ctx: &serenity::all::Context) {
-        let configs = levels_config::Entity::find()
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-        for m in configs {
-            CONFIG_CACHE.insert(m.guild_id as u64, m);
-        }
+        config::hydrate_cache::<levels_config::Entity, _>(
+            self.state.servers_orm(),
+            &CONFIG_CACHE,
+            |m| m.guild_id as u64,
+            |m| m,
+        )
+        .await;
 
         let rewards = levels_rewards::Entity::find()
             .all(self.state.servers_orm())
@@ -245,13 +245,14 @@ async fn apply_setting<F: FnOnce(&mut levels_config::Model)>(
     msg: String,
 ) -> Result<(), Error> {
     let gid = ctx.guild_id().unwrap().get();
-    match update_config(&ctx.data().state, gid, f).await {
-        Ok(_) => send_plain(ctx, msg).await,
-        Err(e) => {
-            tracing::error!(error = ?e, "failed to save levels config");
-            send_error(ctx, "Failed to save the levels config.").await
-        }
-    }
+    config::apply_setting(
+        ctx,
+        "levels",
+        msg,
+        "Failed to save the levels config.",
+        update_config(&ctx.data().state, gid, f),
+    )
+    .await
 }
 
 /// Reload a guild's role rewards from the DB into `REWARDS_CACHE`.

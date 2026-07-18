@@ -6,7 +6,7 @@ use crate::framework::{Context, Data, Error, send_error, send_plain};
 use crate::state::{AppState, GoodbyeConfig, WelcomeConfig};
 use crate::tagscript::{self, TagContext};
 use crate::utils::roles::{role_rank, top_role};
-use crate::utils::{colors, format, interactions, perms};
+use crate::utils::{colors, config, embeds, format, interactions, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set};
@@ -43,42 +43,32 @@ impl WelcomeCog {
 impl Cog for WelcomeCog {
     async fn on_ready(&self, _ctx: &serenity::all::Context) {
         // Hydrate the welcome cache from welcome_config.
-        let rows = welcome_config::Entity::find()
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-
-        let welcome_count = rows.len();
-        for m in rows {
-            self.state.welcome_cache.insert(
-                m.guild_id as u64,
-                WelcomeConfig {
-                    channel_id: m.channel_id,
-                    message: m.message,
-                    embed_json: m.embed_json,
-                    enabled: m.enabled,
-                },
-            );
-        }
+        let welcome_count = config::hydrate_cache::<welcome_config::Entity, _>(
+            self.state.servers_orm(),
+            &self.state.welcome_cache,
+            |m| m.guild_id as u64,
+            |m| WelcomeConfig {
+                channel_id: m.channel_id,
+                message: m.message,
+                embed_json: m.embed_json,
+                enabled: m.enabled,
+            },
+        )
+        .await;
 
         // Hydrate the goodbye cache from goodbye_config.
-        let rows = goodbye_config::Entity::find()
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-
-        let goodbye_count = rows.len();
-        for m in rows {
-            self.state.goodbye_cache.insert(
-                m.guild_id as u64,
-                GoodbyeConfig {
-                    channel_id: m.channel_id,
-                    message: m.message,
-                    embed_json: m.embed_json,
-                    enabled: m.enabled,
-                },
-            );
-        }
+        let goodbye_count = config::hydrate_cache::<goodbye_config::Entity, _>(
+            self.state.servers_orm(),
+            &self.state.goodbye_cache,
+            |m| m.guild_id as u64,
+            |m| GoodbyeConfig {
+                channel_id: m.channel_id,
+                message: m.message,
+                embed_json: m.embed_json,
+                enabled: m.enabled,
+            },
+        )
+        .await;
 
         tracing::info!("Welcome cache loaded ({welcome_count} welcome, {goodbye_count} goodbye)");
     }
@@ -172,7 +162,7 @@ impl WelcomeCog {
         let output = tagscript::run(&config.message, &mut tctx);
         let embed = match config.embed_json.as_deref() {
             Some(json) => render_stored_embed(json, &mut tctx),
-            None => output.embed.as_ref().map(json_to_embed),
+            None => output.embed.as_ref().map(embeds::json_to_embed),
         };
         send_output(ctx, channel, output.content, embed).await;
     }
@@ -192,7 +182,7 @@ impl WelcomeCog {
         let output = tagscript::run(&config.message, &mut tctx);
         let embed = match config.embed_json.as_deref() {
             Some(json) => render_stored_embed(json, &mut tctx),
-            None => output.embed.as_ref().map(json_to_embed),
+            None => output.embed.as_ref().map(embeds::json_to_embed),
         };
         send_output(ctx, channel, output.content, embed).await;
     }
@@ -1258,67 +1248,6 @@ fn render_stored_embed(json_str: &str, ctx: &mut TagContext) -> Option<CreateEmb
         }
 
     Some(embed)
-}
-
-/// Deserialize an already-rendered TagScript embed JSON object into a
-/// `CreateEmbed` (no TagScript resolution; mirrors `tags.rs::json_to_embed`).
-fn json_to_embed(v: &Value) -> CreateEmbed {
-    let mut embed = CreateEmbed::new();
-
-    if let Some(title) = v.get("title").and_then(|x| x.as_str()) {
-        embed = embed.title(title);
-    }
-    if let Some(desc) = v.get("description").and_then(|x| x.as_str()) {
-        embed = embed.description(desc);
-    }
-    if let Some(color) = v.get("color").and_then(|x| x.as_u64()) {
-        embed = embed.color(Colour(color as u32));
-    }
-    if let Some(url) = v.get("url").and_then(|x| x.as_str()) {
-        embed = embed.url(url);
-    }
-    if let Some(fields) = v.get("fields").and_then(|x| x.as_array()) {
-        for f in fields {
-            let name = f.get("name").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
-            let value = f
-                .get("value")
-                .and_then(|x| x.as_str())
-                .unwrap_or("\u{200B}");
-            let inline = f.get("inline").and_then(|x| x.as_bool()).unwrap_or(false);
-            embed = embed.field(name, value, inline);
-        }
-    }
-    if let Some(url) = v
-        .get("thumbnail")
-        .and_then(|t| t.get("url"))
-        .and_then(|x| x.as_str())
-    {
-        embed = embed.thumbnail(url);
-    }
-    if let Some(url) = v
-        .get("image")
-        .and_then(|t| t.get("url"))
-        .and_then(|x| x.as_str())
-    {
-        embed = embed.image(url);
-    }
-    if let Some(text) = v
-        .get("footer")
-        .and_then(|t| t.get("text"))
-        .and_then(|x| x.as_str())
-    {
-        embed = embed.footer(CreateEmbedFooter::new(text));
-    }
-    if let Some(author) = v.get("author")
-        && let Some(name) = author.get("name").and_then(|x| x.as_str()) {
-            let mut a = CreateEmbedAuthor::new(name);
-            if let Some(icon) = author.get("icon_url").and_then(|x| x.as_str()) {
-                a = a.icon_url(icon);
-            }
-            embed = embed.author(a);
-        }
-
-    embed
 }
 
 /// Which column of a guild's welcome/goodbye config row to upsert.

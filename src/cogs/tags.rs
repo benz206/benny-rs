@@ -10,9 +10,8 @@ use dashmap::DashMap;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serenity::all::{
-    ChannelId, Colour, CreateAllowedMentions, CreateEmbed, CreateEmbedAuthor,
-    CreateEmbedFooter, CreateMessage, GuildId, Message, Permissions, ReactionType, RoleId,
-    Timestamp, UserId,
+    ChannelId, CreateAllowedMentions, CreateEmbed, CreateMessage, GuildId, Message, Permissions,
+    ReactionType, RoleId, Timestamp, UserId,
 };
 use serenity::prelude::Mentionable;
 use std::collections::HashMap;
@@ -582,7 +581,7 @@ async fn tagtest(
             create = create.content(content);
         }
         if let Some(ref embed_json) = output.embed {
-            create = create.embed(json_to_embed(embed_json));
+            create = create.embed(embeds::json_to_embed(embed_json));
         }
         let _ = channel_id.send_message(&sctx.http, create).await;
     }
@@ -672,7 +671,7 @@ impl TagsCog {
                 create = create.content(content);
             }
             if let Some(ref embed_json) = output.embed {
-                create = create.embed(json_to_embed(embed_json));
+                create = create.embed(embeds::json_to_embed(embed_json));
             }
             let dest = output
                 .redirect_channel
@@ -845,62 +844,3 @@ async fn member_can_manage(
     }
 }
 
-/// Deserialize a TagScript embed JSON object into a serenity `CreateEmbed`.
-fn json_to_embed(v: &serde_json::Value) -> CreateEmbed {
-    let mut embed = CreateEmbed::new();
-
-    if let Some(title) = v.get("title").and_then(|x| x.as_str()) {
-        embed = embed.title(title);
-    }
-    if let Some(desc) = v.get("description").and_then(|x| x.as_str()) {
-        embed = embed.description(desc);
-    }
-    if let Some(color) = v.get("color").and_then(|x| x.as_u64()) {
-        embed = embed.color(Colour(color as u32));
-    }
-    if let Some(url) = v.get("url").and_then(|x| x.as_str()) {
-        embed = embed.url(url);
-    }
-    if let Some(fields) = v.get("fields").and_then(|x| x.as_array()) {
-        for f in fields {
-            let name = f.get("name").and_then(|x| x.as_str()).unwrap_or("\u{200B}");
-            let value = f
-                .get("value")
-                .and_then(|x| x.as_str())
-                .unwrap_or("\u{200B}");
-            let inline = f.get("inline").and_then(|x| x.as_bool()).unwrap_or(false);
-            embed = embed.field(name, value, inline);
-        }
-    }
-    if let Some(url) = v
-        .get("thumbnail")
-        .and_then(|t| t.get("url"))
-        .and_then(|x| x.as_str())
-    {
-        embed = embed.thumbnail(url);
-    }
-    if let Some(url) = v
-        .get("image")
-        .and_then(|t| t.get("url"))
-        .and_then(|x| x.as_str())
-    {
-        embed = embed.image(url);
-    }
-    if let Some(text) = v
-        .get("footer")
-        .and_then(|t| t.get("text"))
-        .and_then(|x| x.as_str())
-    {
-        embed = embed.footer(CreateEmbedFooter::new(text));
-    }
-    if let Some(author) = v.get("author")
-        && let Some(name) = author.get("name").and_then(|x| x.as_str()) {
-            let mut a = CreateEmbedAuthor::new(name);
-            if let Some(icon) = author.get("icon_url").and_then(|x| x.as_str()) {
-                a = a.icon_url(icon);
-            }
-            embed = embed.author(a);
-        }
-
-    embed
-}

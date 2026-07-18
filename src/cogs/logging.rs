@@ -2,6 +2,7 @@ use super::Cog;
 use crate::entities::logging;
 use crate::framework::{Context, Data, Error, send_error};
 use crate::state::{AppState, LoggingConfig};
+use crate::utils::config;
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -115,20 +116,16 @@ async fn log_event(
 #[async_trait]
 impl Cog for LoggingCog {
     async fn on_ready(&self, _ctx: &serenity::all::Context) {
-        let rows = logging::Entity::find()
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-
-        for row in rows {
-            self.state.logging_cache.insert(
-                row.guild_id as u64,
-                LoggingConfig {
-                    webhook_url: row.webhook_url,
-                    enabled: row.enabled,
-                },
-            );
-        }
+        config::hydrate_cache::<logging::Entity, _>(
+            self.state.servers_orm(),
+            &self.state.logging_cache,
+            |row| row.guild_id as u64,
+            |row| LoggingConfig {
+                webhook_url: row.webhook_url,
+                enabled: row.enabled,
+            },
+        )
+        .await;
         tracing::info!("Logging configs loaded");
     }
 

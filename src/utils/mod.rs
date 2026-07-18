@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod colors;
+pub mod config;
 pub mod embeds;
 pub mod format;
 pub mod interactions;

@@ -7,10 +7,10 @@
 use super::Cog;
 use crate::cogs::moderation::{apply_native_timeout, create_case};
 use crate::entities::automod_config;
-use crate::framework::{Context, Data, Error, send_embed, send_error, send_plain};
+use crate::framework::{Context, Data, Error, send_embed};
 use crate::state::AppState;
 use crate::utils::ratelimit::RateLimiter;
-use crate::utils::{colors, perms};
+use crate::utils::{colors, config, perms};
 use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
@@ -142,13 +142,13 @@ impl AutomodCog {
 #[async_trait]
 impl Cog for AutomodCog {
     async fn on_ready(&self, _ctx: &serenity::all::Context) {
-        let rows = automod_config::Entity::find()
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-        for m in rows {
-            CONFIG_CACHE.insert(m.guild_id as u64, m);
-        }
+        config::hydrate_cache::<automod_config::Entity, _>(
+            self.state.servers_orm(),
+            &CONFIG_CACHE,
+            |m| m.guild_id as u64,
+            |m| m,
+        )
+        .await;
         tracing::info!("Automod configs loaded");
     }
 
@@ -383,13 +383,14 @@ async fn apply_setting<F: FnOnce(&mut automod_config::Model)>(
     msg: String,
 ) -> Result<(), Error> {
     let gid = ctx.guild_id().unwrap().get();
-    match update_config(&ctx.data().state, gid, f).await {
-        Ok(_) => send_plain(ctx, msg).await,
-        Err(e) => {
-            tracing::error!(error = ?e, "failed to save automod config");
-            send_error(ctx, "Failed to save the automod config.").await
-        }
-    }
+    config::apply_setting(
+        ctx,
+        "automod",
+        msg,
+        "Failed to save the automod config.",
+        update_config(&ctx.data().state, gid, f),
+    )
+    .await
 }
 
 // ---- commands ---------------------------------------------------------------

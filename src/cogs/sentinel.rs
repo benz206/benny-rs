@@ -3,7 +3,7 @@ use crate::entities::{sentinel_config, sentinels_decancer};
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::{AppState, SentinelConfig};
 use crate::utils::ratelimit::RateLimiter;
-use crate::utils::{colors, embeds, interactions, parse, perms};
+use crate::utils::{colors, config, embeds, interactions, parse, perms};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::time::Duration;
@@ -101,19 +101,16 @@ impl Cog for SentinelCog {
         }
 
         // Load decancer configs.
-        let drows = sentinels_decancer::Entity::find()
-            .all(self.state.servers_orm())
-            .await
-            .unwrap_or_default();
-        for m in drows {
-            DECANCER_CACHE.insert(
-                m.guild_id as u64,
-                DecancerConfig {
-                    enabled: m.enabled,
-                    log_channel_id: m.log_channel_id,
-                },
-            );
-        }
+        config::hydrate_cache::<sentinels_decancer::Entity, _>(
+            self.state.servers_orm(),
+            &DECANCER_CACHE,
+            |m| m.guild_id as u64,
+            |m| DecancerConfig {
+                enabled: m.enabled,
+                log_channel_id: m.log_channel_id,
+            },
+        )
+        .await;
 
         tracing::info!("Sentinel + decancer configs loaded");
     }
