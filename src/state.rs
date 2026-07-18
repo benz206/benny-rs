@@ -202,19 +202,33 @@ impl AppState {
     }
 }
 
-pub fn start_latency_task(state: Arc<AppState>) {
+/// Samples real gateway heartbeat latency from the shard runners every 30s and
+/// keeps the last 60 samples for `/ping`. Shards report `None` until their
+/// first heartbeat ack, so early ticks may record nothing.
+pub fn start_latency_task(state: Arc<AppState>, shards: Arc<serenity::gateway::ShardManager>) {
     tokio::spawn(async move {
-        let mut value: u64 = 0;
         loop {
-            {
+            sleep(Duration::from_secs(30)).await;
+            let avg_ms = {
+                let runners = shards.runners.lock().await;
+                let latencies: Vec<u128> = runners
+                    .values()
+                    .filter_map(|r| r.latency)
+                    .map(|d| d.as_millis())
+                    .collect();
+                if latencies.is_empty() {
+                    None
+                } else {
+                    Some((latencies.iter().sum::<u128>() / latencies.len() as u128) as u64)
+                }
+            };
+            if let Some(ms) = avg_ms {
                 let mut history = state.latency_ms.lock();
                 if history.len() >= 60 {
                     history.remove(0);
                 }
-                history.push(value);
+                history.push(ms);
             }
-            value = value.saturating_add(1);
-            sleep(Duration::from_secs(30)).await;
         }
     });
 }

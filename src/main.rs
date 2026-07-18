@@ -112,7 +112,6 @@ async fn main() -> Result<()> {
         users_db,
         redis,
     ));
-    start_latency_task(app_state.clone());
 
     let token = if cfg!(debug_assertions) {
         config.dev_token.as_deref().unwrap_or(&config.token)
@@ -266,13 +265,15 @@ async fn main() -> Result<()> {
             anyhow::anyhow!(e)
         })?;
 
+    start_latency_task(state_for_http.clone(), client.shard_manager.clone());
+
     let api_addr: std::net::SocketAddr = state_for_http
         .config
         .dashboard_api_addr
         .as_deref()
         .unwrap_or("127.0.0.1:8080")
         .parse()
-        .expect("dashboard_api_addr must be a valid host:port");
+        .map_err(|e| anyhow::anyhow!("dashboard_api_addr must be a valid host:port: {e}"))?;
     let api = http::router(state_for_http);
     tokio::spawn(http::serve(api, api_addr));
 
