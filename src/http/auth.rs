@@ -89,11 +89,10 @@ impl RateLimiter {
     fn allow(&self, key: u64) -> bool {
         // Evict an arbitrary entry before admitting a brand-new key past the cap,
         // so a caller rotating `X-Actor-Id` can't grow the map indefinitely.
-        if self.hits.len() >= self.cap && !self.hits.contains_key(&key) {
-            if let Some(victim) = self.hits.iter().next().map(|e| *e.key()) {
+        if self.hits.len() >= self.cap && !self.hits.contains_key(&key)
+            && let Some(victim) = self.hits.iter().next().map(|e| *e.key()) {
                 self.hits.remove(&victim);
             }
-        }
         let mut e = self.hits.entry(key).or_insert((Instant::now(), 0));
         if e.0.elapsed() >= self.window {
             *e = (Instant::now(), 0);

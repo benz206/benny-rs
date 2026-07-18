@@ -1252,15 +1252,14 @@ fn render_stored_embed(json_str: &str, ctx: &mut TagContext) -> Option<CreateEmb
     {
         embed = embed.footer(CreateEmbedFooter::new(render_str(t, ctx)));
     }
-    if let Some(author) = v.get("author") {
-        if let Some(name) = author.get("name").and_then(|x| x.as_str()) {
+    if let Some(author) = v.get("author")
+        && let Some(name) = author.get("name").and_then(|x| x.as_str()) {
             let mut a = CreateEmbedAuthor::new(render_str(name, ctx));
             if let Some(icon) = author.get("icon_url").and_then(|x| x.as_str()) {
                 a = a.icon_url(render_str(icon, ctx));
             }
             embed = embed.author(a);
         }
-    }
 
     Some(embed)
 }
@@ -1314,15 +1313,14 @@ fn json_to_embed(v: &Value) -> CreateEmbed {
     {
         embed = embed.footer(CreateEmbedFooter::new(text));
     }
-    if let Some(author) = v.get("author") {
-        if let Some(name) = author.get("name").and_then(|x| x.as_str()) {
+    if let Some(author) = v.get("author")
+        && let Some(name) = author.get("name").and_then(|x| x.as_str()) {
             let mut a = CreateEmbedAuthor::new(name);
             if let Some(icon) = author.get("icon_url").and_then(|x| x.as_str()) {
                 a = a.icon_url(icon);
             }
             embed = embed.author(a);
         }
-    }
 
     embed
 }

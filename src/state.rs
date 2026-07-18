@@ -165,13 +165,11 @@ impl AppState {
     /// path (the cache is hydrated on ready and on guild join). `None` (DMs)
     /// always resolves to the default prefix.
     pub fn guild_prefixes(&self, guild_id: Option<u64>) -> Vec<String> {
-        if let Some(gid) = guild_id {
-            if let Some(entry) = self.prefix_cache.get(&gid) {
-                if !entry.is_empty() {
+        if let Some(gid) = guild_id
+            && let Some(entry) = self.prefix_cache.get(&gid)
+                && !entry.is_empty() {
                     return entry.clone();
                 }
-            }
-        }
         vec![self.config.prefix.clone()]
     }
     /// Whether the message begins with one of the guild's active prefixes.

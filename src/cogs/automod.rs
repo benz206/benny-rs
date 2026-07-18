@@ -40,11 +40,10 @@ const JOIN_WINDOW_CAP: usize = 10_000;
 /// [`crate::utils::cache::bounded_insert`] (which replaces the whole value);
 /// this mirrors its "evict arbitrary entries" approach instead.
 fn evict_if_full<K: Eq + std::hash::Hash + Clone, V>(map: &DashMap<K, V>, key: &K, cap: usize) {
-    if map.len() >= cap && !map.contains_key(key) {
-        if let Some(victim) = map.iter().next().map(|e| e.key().clone()) {
+    if map.len() >= cap && !map.contains_key(key)
+        && let Some(victim) = map.iter().next().map(|e| e.key().clone()) {
             map.remove(&victim);
         }
-    }
 }
 
 /// Substrings that identify a Discord invite link.

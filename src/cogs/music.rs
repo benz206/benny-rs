@@ -421,11 +421,10 @@ async fn play(
     }
 
     // If nothing is playing, kick off the first queued track.
-    if let Ok(data) = player.get_player().await {
-        if data.track.is_none() && queue.get_track(0).await.is_ok_and(|x| x.is_some()) {
+    if let Ok(data) = player.get_player().await
+        && data.track.is_none() && queue.get_track(0).await.is_ok_and(|x| x.is_some()) {
             let _ = player.skip();
         }
-    }
 
     let desc = if added > 1 {
         format!("Added **{added}** tracks to the queue.")

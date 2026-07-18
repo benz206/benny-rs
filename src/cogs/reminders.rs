@@ -89,13 +89,10 @@ impl Cog for RemindersCog {
             "rem:select" => {
                 if let ComponentInteractionDataKind::StringSelect { values } =
                     &interaction.data.kind
-                {
-                    if let Some(ts) = values.first().and_then(|v| v.parse::<i64>().ok()) {
-                        if let Some(mut p) = PENDING.get_mut(&msg_id) {
+                    && let Some(ts) = values.first().and_then(|v| v.parse::<i64>().ok())
+                        && let Some(mut p) = PENDING.get_mut(&msg_id) {
                             p.chosen_time = Some(ts);
                         }
-                    }
-                }
                 // Acknowledge silently (deferred update).
                 let _ = interaction
                     .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)

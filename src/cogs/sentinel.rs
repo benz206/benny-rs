@@ -290,11 +290,10 @@ impl Cog for SentinelCog {
         let mut inputs: Vec<(String, String)> = Vec::new();
         for row in &interaction.data.components {
             for comp in &row.components {
-                if let ActionRowComponent::InputText(it) = comp {
-                    if let Some(val) = &it.value {
+                if let ActionRowComponent::InputText(it) = comp
+                    && let Some(val) = &it.value {
                         inputs.push((it.custom_id.clone(), val.clone()));
                     }
-                }
             }
         }
 
@@ -308,12 +307,11 @@ impl Cog for SentinelCog {
                     set_log_channel(&self.state, guild_id, c as i64).await;
                     updated.push("log channel".to_string());
                 }
-            } else if let Some((col, _)) = CATEGORIES.iter().find(|(k, _)| *k == key) {
-                if let Some(v) = parse_threshold(&val) {
+            } else if let Some((col, _)) = CATEGORIES.iter().find(|(k, _)| *k == key)
+                && let Some(v) = parse_threshold(&val) {
                     set_threshold(&self.state, guild_id, col, v).await;
                     updated.push(format!("{col} = {v:.2}"));
                 }
-            }
         }
 
         let embed = if updated.is_empty() {

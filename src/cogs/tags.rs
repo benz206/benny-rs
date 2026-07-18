@@ -313,11 +313,10 @@ async fn tag_edit(
         .filter(tags::Column::Name.eq(name.as_str()))
         .exec(state.servers_orm())
         .await;
-    if let Some(mut gt) = state.tag_cache.get_mut(&guild_id) {
-        if let Some(t) = gt.get_mut(&name) {
+    if let Some(mut gt) = state.tag_cache.get_mut(&guild_id)
+        && let Some(t) = gt.get_mut(&name) {
             t.content = content;
         }
-    }
 
     let embed = embeds::success_embed(
         "Success",
@@ -771,11 +770,10 @@ impl TagsCog {
             .filter(tags::Column::Name.eq(name))
             .exec(self.state.servers_orm())
             .await;
-        if let Some(mut gt) = self.state.tag_cache.get_mut(&guild_id) {
-            if let Some(t) = gt.get_mut(name) {
+        if let Some(mut gt) = self.state.tag_cache.get_mut(&guild_id)
+            && let Some(t) = gt.get_mut(name) {
                 t.uses += 1;
             }
-        }
     }
 }
 
@@ -895,15 +893,14 @@ fn json_to_embed(v: &serde_json::Value) -> CreateEmbed {
     {
         embed = embed.footer(CreateEmbedFooter::new(text));
     }
-    if let Some(author) = v.get("author") {
-        if let Some(name) = author.get("name").and_then(|x| x.as_str()) {
+    if let Some(author) = v.get("author")
+        && let Some(name) = author.get("name").and_then(|x| x.as_str()) {
             let mut a = CreateEmbedAuthor::new(name);
             if let Some(icon) = author.get("icon_url").and_then(|x| x.as_str()) {
                 a = a.icon_url(icon);
             }
             embed = embed.author(a);
         }
-    }
 
     embed
 }
