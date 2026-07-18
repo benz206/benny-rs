@@ -572,8 +572,8 @@ fn ordinal(parameter: Option<&str>, payload: &str, name: &str) -> String {
 }
 
 fn ordinal_suffix(i: i64) -> &'static str {
-    let r = (i % 10);
-    let tens = (i / 10 % 10);
+    let r = i % 10 ;
+    let tens = i / 10 % 10 ;
     let start = if tens != 1 && r < 4 { r } else { 0 } as usize;
     const S: &[u8] = b"tsnrhtdd";
     let a = S[start] as char;
