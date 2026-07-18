@@ -7,7 +7,6 @@ use tracing::{error, info};
 mod cogs;
 mod config;
 mod entities;
-mod error;
 mod framework;
 mod http;
 mod migrations;
