@@ -128,46 +128,10 @@ async fn main() -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::DIRECT_MESSAGES;
 
-    use cogs::{
-        CogManager, afk::AfkCog, automod::AutomodCog, base::BaseCog, dev::DevCog,
-        dictionary::DictionaryCog, embed::EmbedCog, events::EventsCog, giveaways::GiveawaysCog,
-        help::HelpCog, info::InfoCog, levels::LevelsCog, logging::LoggingCog,
-        moderation::ModerationCog, music::MusicCog, ocr::OcrCog, prefixes::PrefixesCog,
-        premium::PremiumCog, reminders::RemindersCog, roles::RolesCog, sentinel::SentinelCog,
-        settings::SettingsCog, starboard::StarboardCog, translate::TranslateCog,
-        welcome::WelcomeCog,
-    };
-
     // Cogs own the gateway-event hooks (AFK, sentinel, logging, welcome, ...);
     // poise owns command dispatch. Both share the same `Arc<AppState>`.
-    let mut manager = CogManager::new();
-    manager.register(BaseCog::new(app_state.clone()));
-    manager.register(PrefixesCog::new(app_state.clone()));
-    manager.register(AfkCog::new(app_state.clone()));
-    manager.register(RemindersCog::new(app_state.clone()));
-    // TEMPORARILY DISABLED: TagScript engine has known issues (see tagscript/mod.rs).
-    // manager.register(TagsCog::new(app_state.clone()));
-    manager.register(WelcomeCog::new(app_state.clone()));
-    manager.register(LoggingCog::new(app_state.clone()));
-    manager.register(SettingsCog::new(app_state.clone()));
-    manager.register(ModerationCog::new(app_state.clone()));
-    manager.register(InfoCog::new(app_state.clone()));
-    manager.register(HelpCog::new(app_state.clone()));
-    manager.register(RolesCog::new(app_state.clone()));
-    manager.register(TranslateCog::new(app_state.clone()));
-    manager.register(DictionaryCog::new(app_state.clone()));
-    manager.register(OcrCog::new(app_state.clone()));
-    manager.register(EmbedCog::new(app_state.clone()));
-    manager.register(SentinelCog::new(app_state.clone()));
-    manager.register(AutomodCog::new(app_state.clone()));
-    manager.register(GiveawaysCog::new(app_state.clone()));
-    manager.register(LevelsCog::new(app_state.clone()));
-    manager.register(StarboardCog::new(app_state.clone()));
-    manager.register(DevCog::new(app_state.clone()));
-    manager.register(PremiumCog::new(app_state.clone()));
-    manager.register(MusicCog::new(app_state.clone()));
-    manager.register(EventsCog::new(app_state.clone()));
-    let manager = Arc::new(manager);
+    // Registration lives in cogs::build_manager / cogs::all_commands.
+    let manager = Arc::new(cogs::build_manager(&app_state));
 
     let owners: HashSet<serenity::all::UserId> = config
         .owners
@@ -175,7 +139,7 @@ async fn main() -> Result<()> {
         .map(|&id| serenity::all::UserId::new(id))
         .collect();
 
-    let mut commands = framework::all_commands();
+    let mut commands = cogs::all_commands();
     framework::apply_rate_limits(&mut commands);
     let options = poise::FrameworkOptions {
         commands,

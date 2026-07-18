@@ -292,8 +292,78 @@ pub mod sentinel;
 pub mod settings;
 pub mod starboard;
 // Dormant while the TagScript engine is disabled (see tagscript/mod.rs); the
-// cog is not registered in main.rs, so its items are unused by design.
+// cog is not registered in `build_manager`/`all_commands` below, so its items
+// are unused by design.
 #[allow(dead_code)]
 pub mod tags;
 pub mod translate;
 pub mod welcome;
+
+// ---- registration ----------------------------------------------------------
+//
+// The single place cogs are enumerated. Adding a cog means: `pub mod` above,
+// one line in `build_manager` (gateway-event hooks), and one line in
+// `all_commands` (poise commands). Nothing in main.rs or framework.rs changes.
+
+/// Construct the manager with every active cog registered, in dispatch order.
+pub fn build_manager(state: &Arc<crate::state::AppState>) -> CogManager {
+    let mut m = CogManager::new();
+    m.register(base::BaseCog::new(state.clone()));
+    m.register(prefixes::PrefixesCog::new(state.clone()));
+    m.register(afk::AfkCog::new(state.clone()));
+    m.register(reminders::RemindersCog::new(state.clone()));
+    // TEMPORARILY DISABLED: TagScript engine has known issues (see tagscript/mod.rs).
+    // m.register(tags::TagsCog::new(state.clone()));
+    m.register(welcome::WelcomeCog::new(state.clone()));
+    m.register(logging::LoggingCog::new(state.clone()));
+    m.register(settings::SettingsCog::new(state.clone()));
+    m.register(moderation::ModerationCog::new(state.clone()));
+    m.register(info::InfoCog::new(state.clone()));
+    m.register(help::HelpCog::new(state.clone()));
+    m.register(roles::RolesCog::new(state.clone()));
+    m.register(translate::TranslateCog::new(state.clone()));
+    m.register(dictionary::DictionaryCog::new(state.clone()));
+    m.register(ocr::OcrCog::new(state.clone()));
+    m.register(embed::EmbedCog::new(state.clone()));
+    m.register(sentinel::SentinelCog::new(state.clone()));
+    m.register(automod::AutomodCog::new(state.clone()));
+    m.register(giveaways::GiveawaysCog::new(state.clone()));
+    m.register(levels::LevelsCog::new(state.clone()));
+    m.register(starboard::StarboardCog::new(state.clone()));
+    m.register(dev::DevCog::new(state.clone()));
+    m.register(premium::PremiumCog::new(state.clone()));
+    m.register(music::MusicCog::new(state.clone()));
+    m.register(events::EventsCog::new(state.clone()));
+    m
+}
+
+/// Every command across every cog, concatenated into the list poise registers.
+pub fn all_commands() -> Vec<poise::Command<crate::framework::Data, crate::framework::Error>> {
+    let mut cmds = Vec::new();
+    cmds.extend(base::commands());
+    cmds.extend(info::commands());
+    // TEMPORARILY DISABLED: TagScript engine has known issues (see tagscript/mod.rs).
+    // cmds.extend(tags::commands());
+    cmds.extend(moderation::commands());
+    cmds.extend(prefixes::commands());
+    cmds.extend(settings::commands());
+    cmds.extend(welcome::commands());
+    cmds.extend(logging::commands());
+    cmds.extend(sentinel::commands());
+    cmds.extend(automod::commands());
+    cmds.extend(giveaways::commands());
+    cmds.extend(levels::commands());
+    cmds.extend(starboard::commands());
+    cmds.extend(roles::commands());
+    cmds.extend(reminders::commands());
+    cmds.extend(premium::commands());
+    cmds.extend(translate::commands());
+    cmds.extend(dictionary::commands());
+    cmds.extend(ocr::commands());
+    cmds.extend(embed::commands());
+    cmds.extend(afk::commands());
+    cmds.extend(music::commands());
+    cmds.extend(dev::commands());
+    cmds.extend(help::commands());
+    cmds
+}
