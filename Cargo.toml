@@ -36,9 +36,7 @@ sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls-aws-lc-rs",
 # Constant-time token comparison for the dashboard API bearer check.
 subtle = "2.6"
 sysinfo = "0.39.5"
-thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
-tokio-util = "0.7.18"
 # Dashboard API hardening layers: CORS allowlist, request-body size cap, and a
 # per-request timeout. Already present transitively via the axum/tower tree.
 tower-http = { version = "0.6", features = ["cors", "limit", "timeout"] }

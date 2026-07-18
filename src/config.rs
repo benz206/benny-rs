@@ -8,14 +8,10 @@ pub struct BotConfig {
     pub dev_token: Option<String>,
     #[serde(default = "default_prefix")]
     pub prefix: String,
-    #[serde(default)]
-    pub cogs: Vec<String>,
     #[serde(default = "default_redis_uri")]
     pub redis_uri: String,
     #[serde(default)]
     pub lavalink: LavalinkConfig,
-    #[serde(default)]
-    pub spotify: SpotifyConfig,
     #[serde(default)]
     pub owners: Vec<u64>,
     pub support_guild: Option<u64>,
@@ -48,14 +44,6 @@ pub struct LavalinkConfig {
     pub password: String,
     #[serde(default = "default_search_source")]
     pub search_source: String,
-}
-
-#[derive(Debug, Deserialize, Clone, Default)]
-pub struct SpotifyConfig {
-    #[serde(default)]
-    pub client_id: String,
-    #[serde(default)]
-    pub client_secret: String,
 }
 
 fn default_prefix() -> String {
