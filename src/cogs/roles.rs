@@ -3,6 +3,7 @@ use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::AppState;
 use crate::utils::colors;
 use crate::utils::format::loading_bar;
+use crate::utils::interactions;
 use crate::utils::parse::parse_role_id;
 use crate::utils::roles::{role_rank, top_role};
 use async_trait::async_trait;
@@ -101,16 +102,12 @@ impl Cog for RolesCog {
 
         // Only the invoker may resolve their own confirmation.
         if interaction.user.id.get() != author_id {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("This confirmation isn't for you."),
-                    ),
-                )
-                .await;
+            interactions::respond_ephemeral_text(
+                ctx,
+                interaction,
+                "This confirmation isn't for you.",
+            )
+            .await;
             return;
         }
 
@@ -127,16 +124,12 @@ impl Cog for RolesCog {
             "start" => {
                 let Some((_, op)) = PENDING.remove(&message_id) else {
                     // Op already consumed or evicted (e.g. after a restart).
-                    let _ = interaction
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .ephemeral(true)
-                                    .content("This confirmation has expired."),
-                            ),
-                        )
-                        .await;
+                    interactions::respond_ephemeral_text(
+                        ctx,
+                        interaction,
+                        "This confirmation has expired.",
+                    )
+                    .await;
                     return;
                 };
 

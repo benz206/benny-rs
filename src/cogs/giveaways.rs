@@ -7,6 +7,7 @@ use crate::entities::{giveaway_entries, giveaways};
 use crate::framework::{Context, Data, Error, send_embed, send_error, send_plain};
 use crate::state::AppState;
 use crate::utils::colors;
+use crate::utils::interactions;
 use crate::utils::time::parse_when;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -15,8 +16,7 @@ use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serenity::all::{
     ButtonStyle, ChannelId, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
-    Http, Timestamp,
+    CreateMessage, EditMessage, Http, Timestamp,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,15 +75,7 @@ impl Cog for GiveawaysCog {
             Ok(Some(g)) if !g.ended
         );
         if !found {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("This giveaway has ended."),
-                    ),
-                )
+            interactions::respond_ephemeral_text(ctx, interaction, "This giveaway has ended.")
                 .await;
             return;
         }
@@ -119,16 +111,7 @@ impl Cog for GiveawaysCog {
             }
         };
 
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .ephemeral(true)
-                        .content(content),
-                ),
-            )
-            .await;
+        interactions::respond_ephemeral_text(ctx, interaction, content).await;
     }
 }
 

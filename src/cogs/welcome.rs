@@ -6,7 +6,7 @@ use crate::framework::{Context, Data, Error, send_error, send_plain};
 use crate::state::{AppState, GoodbyeConfig, WelcomeConfig};
 use crate::tagscript::{self, TagContext};
 use crate::utils::roles::{role_rank, top_role};
-use crate::utils::{colors, format, perms};
+use crate::utils::{colors, format, interactions, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set};
@@ -125,16 +125,12 @@ impl Cog for WelcomeCog {
 
         // Only the user who opened the wizard may toggle it.
         if interaction.user.id.get() != author_id {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("This setup panel isn't for you."),
-                    ),
-                )
-                .await;
+            interactions::respond_ephemeral_text(
+                ctx,
+                interaction,
+                "This setup panel isn't for you.",
+            )
+            .await;
             return;
         }
 

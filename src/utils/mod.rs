@@ -2,6 +2,7 @@ pub mod cache;
 pub mod colors;
 pub mod embeds;
 pub mod format;
+pub mod interactions;
 pub mod parse;
 pub mod perms;
 pub mod ratelimit;

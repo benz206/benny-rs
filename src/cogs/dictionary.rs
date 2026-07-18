@@ -1,6 +1,7 @@
 use super::Cog;
 use crate::framework::{Context, Data, Error, send_error};
 use crate::state::AppState;
+use crate::utils::interactions;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::Deserialize;
@@ -125,16 +126,12 @@ impl Cog for DictionaryCog {
         // Owner check: only the original invoker may use the dropdown.
         if let Some(author_id) = SESSIONS.get(&message_id)
             && interaction.user.id.get() != *author_id {
-                let _ = interaction
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .ephemeral(true)
-                                .content("This dictionary menu isn't yours to control."),
-                        ),
-                    )
-                    .await;
+                interactions::respond_ephemeral_text(
+                    ctx,
+                    interaction,
+                    "This dictionary menu isn't yours to control.",
+                )
+                .await;
                 return;
             }
 

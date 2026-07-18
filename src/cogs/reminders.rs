@@ -3,7 +3,7 @@ use crate::entities::{reminders, reminders_users};
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::AppState;
 use crate::utils::time::parse_when;
-use crate::utils::{colors, format};
+use crate::utils::{colors, format, interactions};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -81,7 +81,12 @@ impl Cog for RemindersCog {
         if let Some(owner_id) = PENDING.get(&msg_id).map(|p| p.owner_id)
             && owner_id != interaction.user.id.get()
         {
-            ephemeral_error(ctx, interaction, "This isn't your reminder prompt.").await;
+            interactions::respond_ephemeral_error(
+                ctx,
+                interaction,
+                "This isn't your reminder prompt.",
+            )
+            .await;
             return;
         }
 
@@ -113,7 +118,7 @@ impl RemindersCog {
         msg_id: u64,
     ) {
         let Some(pending) = PENDING.get(&msg_id).map(|p| p.clone()) else {
-            ephemeral_error(
+            interactions::respond_ephemeral_error(
                 ctx,
                 interaction,
                 "This reminder prompt has expired. Run the command again.",
@@ -123,7 +128,12 @@ impl RemindersCog {
         };
 
         let Some(ts) = pending.chosen_time else {
-            ephemeral_error(ctx, interaction, "You need to select a time for the reminder.").await;
+            interactions::respond_ephemeral_error(
+                ctx,
+                interaction,
+                "You need to select a time for the reminder.",
+            )
+            .await;
             return;
         };
 
@@ -460,28 +470,6 @@ fn created_embed(content: &str, fire_at: i64, id: i64) -> CreateEmbed {
         .color(colors::GREEN)
         .footer(CreateEmbedFooter::new(format!("Reminder ID: {id}")))
         .timestamp(Timestamp::now())
-}
-
-async fn ephemeral_error(
-    ctx: &serenity::all::Context,
-    interaction: &ComponentInteraction,
-    text: &str,
-) {
-    let embed = CreateEmbed::new()
-        .title("Error")
-        .description(text)
-        .color(colors::RED)
-        .timestamp(Timestamp::now());
-    let _ = interaction
-        .create_response(
-            &ctx.http,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .embed(embed)
-                    .ephemeral(true),
-            ),
-        )
-        .await;
 }
 
 /// Recompute a user's active-reminder count from SQLite and mirror it into both

@@ -2,6 +2,7 @@ use super::Cog;
 use crate::framework::{Context, Data, Error};
 use crate::state::AppState;
 use crate::utils::embeds::error_embed;
+use crate::utils::interactions;
 use dashmap::DashMap;
 use serenity::all::{
     ButtonStyle, Colour, ComponentInteraction, ComponentInteractionDataKind,
@@ -293,16 +294,12 @@ impl Cog for HelpCog {
         if let Some(owner) = owner
             && interaction.user.id.get() != owner
         {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("These help controls aren't yours — run `help` yourself."),
-                    ),
-                )
-                .await;
+            interactions::respond_ephemeral_text(
+                ctx,
+                interaction,
+                "These help controls aren't yours — run `help` yourself.",
+            )
+            .await;
             return;
         }
 

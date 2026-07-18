@@ -2,7 +2,7 @@ use super::Cog;
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::AppState;
 use crate::utils::format::truncate;
-use crate::utils::{colors, embeds};
+use crate::utils::{colors, embeds, interactions};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::{Value, json};
@@ -331,7 +331,7 @@ impl Cog for EmbedCog {
         let owner = match BUILDERS.get(&msg_id) {
             Some(b) => b.owner_id,
             None => {
-                ephemeral(
+                interactions::respond_ephemeral(
                     ctx,
                     interaction,
                     embeds::error_embed("This embed builder has expired."),
@@ -341,7 +341,7 @@ impl Cog for EmbedCog {
             }
         };
         if interaction.user.id.get() != owner {
-            ephemeral(
+            interactions::respond_ephemeral(
                 ctx,
                 interaction,
                 embeds::error_embed("This embed builder isn't yours to control."),
@@ -373,7 +373,7 @@ impl Cog for EmbedCog {
                     .map(|b| b.data.fields.len() >= MAX_FIELDS)
                     .unwrap_or(false);
                 if full {
-                    ephemeral(
+                    interactions::respond_ephemeral(
                         ctx,
                         interaction,
                         embeds::warning_embed("This embed already has the maximum of 25 fields."),
@@ -403,7 +403,7 @@ impl Cog for EmbedCog {
                     let Some(b) = b else { return };
                     if b.data.fields.is_empty() {
                         drop(b);
-                        ephemeral(
+                        interactions::respond_ephemeral(
                             ctx,
                             interaction,
                             embeds::warning_embed("There are no fields to remove."),
@@ -624,15 +624,7 @@ impl Cog for EmbedCog {
                         .await;
                 }
                 Err(e) => {
-                    let _ = interaction
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .embed(embeds::error_embed(&e))
-                                    .ephemeral(true),
-                            ),
-                        )
+                    interactions::respond_ephemeral_modal(ctx, interaction, embeds::error_embed(&e))
                         .await;
                 }
             }
@@ -1172,24 +1164,6 @@ async fn update_no_components(
                 CreateInteractionResponseMessage::new()
                     .embed(embed)
                     .components(vec![]),
-            ),
-        )
-        .await;
-}
-
-/// Send a private (ephemeral) embed in response to a component.
-async fn ephemeral(
-    ctx: &serenity::all::Context,
-    interaction: &ComponentInteraction,
-    embed: CreateEmbed,
-) {
-    let _ = interaction
-        .create_response(
-            &ctx.http,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .embed(embed)
-                    .ephemeral(true),
             ),
         )
         .await;

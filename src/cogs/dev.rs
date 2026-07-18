@@ -1,7 +1,7 @@
 use super::Cog;
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::AppState;
-use crate::utils::colors;
+use crate::utils::{colors, interactions};
 use async_trait::async_trait;
 use serenity::all::{
     ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
@@ -45,16 +45,12 @@ impl Cog for DevCog {
         }
         // Owner-only enforcement on the SystemView controls too.
         if !self.state.is_owner(interaction.user.id.get()) {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("These controls are owner-only."),
-                    ),
-                )
-                .await;
+            interactions::respond_ephemeral_text(
+                ctx,
+                interaction,
+                "These controls are owner-only.",
+            )
+            .await;
             return;
         }
 

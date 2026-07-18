@@ -1,11 +1,11 @@
 use super::Cog;
 use crate::framework::{Context, Data, Error, send_error};
 use crate::state::AppState;
-use crate::utils::{colors, format};
+use crate::utils::{colors, format, interactions};
 use async_trait::async_trait;
 use serenity::all::{
-    ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
-    CreateInteractionResponse, CreateInteractionResponseMessage, MessageId, Timestamp,
+    ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed, MessageId,
+    Timestamp,
 };
 use std::sync::{Arc, LazyLock};
 
@@ -63,16 +63,12 @@ impl Cog for TranslateCog {
                 _ => None,
             },
             None => {
-                let _ = interaction
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("This translation has expired.")
-                                .ephemeral(true),
-                        ),
-                    )
-                    .await;
+                interactions::respond_ephemeral_text(
+                    ctx,
+                    interaction,
+                    "This translation has expired.",
+                )
+                .await;
                 return;
             }
         };
@@ -83,16 +79,7 @@ impl Cog for TranslateCog {
             .description(non_empty(&body))
             .color(colors::PINK)
             .timestamp(Timestamp::now());
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .embed(embed)
-                        .ephemeral(true),
-                ),
-            )
-            .await;
+        interactions::respond_ephemeral(ctx, interaction, embed).await;
     }
 }
 

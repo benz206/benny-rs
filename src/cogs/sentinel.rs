@@ -3,7 +3,7 @@ use crate::entities::{sentinel_config, sentinels_decancer};
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::{AppState, SentinelConfig};
 use crate::utils::ratelimit::RateLimiter;
-use crate::utils::{colors, embeds, parse, perms};
+use crate::utils::{colors, embeds, interactions, parse, perms};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::time::Duration;
@@ -225,18 +225,12 @@ impl Cog for SentinelCog {
         )
         .await
         {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content(
-                                "You need **Manage Server** permission to configure Sentinel.",
-                            ),
-                    ),
-                )
-                .await;
+            interactions::respond_ephemeral_text(
+                ctx,
+                interaction,
+                "You need **Manage Server** permission to configure Sentinel.",
+            )
+            .await;
             return;
         }
 
@@ -322,16 +316,7 @@ impl Cog for SentinelCog {
                 &format!("Updated: {}", updated.join(", ")),
             )
         };
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .embed(embed)
-                        .ephemeral(true),
-                ),
-            )
-            .await;
+        interactions::respond_ephemeral_modal(ctx, interaction, embed).await;
     }
 }
 

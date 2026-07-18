@@ -4,7 +4,7 @@ use crate::entities::{
 };
 use crate::framework::{Context, Data, Error, send_embed, send_error, send_plain};
 use crate::state::AppState;
-use crate::utils::{colors, embeds, perms};
+use crate::utils::{colors, embeds, interactions, perms};
 use async_trait::async_trait;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -84,16 +84,12 @@ impl Cog for SettingsCog {
 
         // Only the user who invoked the command may resolve the confirmation.
         if interaction.user.id.get() != author_id {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("This confirmation isn't for you."),
-                    ),
-                )
-                .await;
+            interactions::respond_ephemeral_text(
+                ctx,
+                interaction,
+                "This confirmation isn't for you.",
+            )
+            .await;
             return;
         }
 
@@ -109,16 +105,12 @@ impl Cog for SettingsCog {
                 )
                 .await
                 {
-                    let _ = interaction
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new().ephemeral(true).content(
-                                    "You need the **Manage Server** permission to reset settings.",
-                                ),
-                            ),
-                        )
-                        .await;
+                    interactions::respond_ephemeral_text(
+                        ctx,
+                        interaction,
+                        "You need the **Manage Server** permission to reset settings.",
+                    )
+                    .await;
                     return;
                 }
                 self.do_reset(guild_id).await;

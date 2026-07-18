@@ -1,13 +1,12 @@
 use super::Cog;
 use crate::framework::{Context, Data, Error, send_embed, send_error};
 use crate::state::AppState;
-use crate::utils::{colors, format};
+use crate::utils::{colors, format, interactions};
 use async_trait::async_trait;
 use serenity::all::{
     ButtonStyle, ChannelType, Colour, ComponentInteraction, CreateActionRow, CreateButton,
-    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseMessage, Guild, GuildId, Permissions, PremiumTier, Role, RoleId,
-    Timestamp, UserPublicFlags,
+    CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateInteractionResponse, Guild, GuildId,
+    Permissions, PremiumTier, Role, RoleId, Timestamp, UserPublicFlags,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,16 +42,12 @@ impl Cog for InfoCog {
         {
             // Only the user who requested the card may delete it.
             if owner != interaction.user.id.get() {
-                let _ = interaction
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .ephemeral(true)
-                                .content("This isn't your avatar card."),
-                        ),
-                    )
-                    .await;
+                interactions::respond_ephemeral_text(
+                    ctx,
+                    interaction,
+                    "This isn't your avatar card.",
+                )
+                .await;
                 return;
             }
             // Acknowledge so Discord does not show "interaction failed", then
