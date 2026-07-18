@@ -430,8 +430,8 @@ async fn role_custom(
         .await;
     }
     for rid in &add {
-        if let Some(r) = guild_roles.get(rid) {
-            if role_rank(r) > role_rank(member_top) {
+        if let Some(r) = guild_roles.get(rid)
+            && role_rank(r) > role_rank(member_top) {
                 return send_error(
                     ctx,
                     &format!(
@@ -442,7 +442,6 @@ async fn role_custom(
                 )
                 .await;
             }
-        }
     }
     for rid in &remove {
         if *rid == member_top.id {
@@ -461,8 +460,8 @@ async fn role_custom(
     // Bot hierarchy guard on every role we will add.
     let bot_top = bot_top_rank(sctx, guild_id, &guild_roles).await;
     for rid in &add {
-        if let Some(r) = guild_roles.get(rid) {
-            if role_rank(r) >= bot_top {
+        if let Some(r) = guild_roles.get(rid)
+            && role_rank(r) >= bot_top {
                 return send_error(
                     ctx,
                     &format!(
@@ -472,7 +471,6 @@ async fn role_custom(
                 )
                 .await;
             }
-        }
     }
 
     for rid in &add {
@@ -685,11 +683,10 @@ fn resolve_role<'a>(roles: &'a HashMap<RoleId, Role>, token: &str) -> Option<&'a
     if token.is_empty() {
         return None;
     }
-    if let Some(id) = parse_role_id(token) {
-        if let Some(r) = roles.get(&RoleId::new(id)) {
+    if let Some(id) = parse_role_id(token)
+        && let Some(r) = roles.get(&RoleId::new(id)) {
             return Some(r);
         }
-    }
     let lower = token.to_lowercase();
     roles.values().find(|r| r.name.to_lowercase() == lower)
 }

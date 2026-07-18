@@ -171,8 +171,8 @@ async fn finish_giveaway(state: &AppState, http: &Http, gw: &giveaways::Model, r
     // would re-run `finish_giveaway` on the next pass and draw a *fresh* random
     // set of winners — announcing a different result every 30s. Reroll must
     // leave `ended` untouched so the original giveaway stays closed.
-    if !reroll {
-        if let Err(e) = giveaways::Entity::update_many()
+    if !reroll
+        && let Err(e) = giveaways::Entity::update_many()
             .col_expr(giveaways::Column::Ended, Expr::value(true))
             .filter(giveaways::Column::Id.eq(gw.id))
             .exec(state.servers_orm())
@@ -185,7 +185,6 @@ async fn finish_giveaway(state: &AppState, http: &Http, gw: &giveaways::Model, r
             );
             return;
         }
-    }
 
     let _ = channel_id
         .send_message(http, CreateMessage::new().content(announcement))

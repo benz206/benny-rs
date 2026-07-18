@@ -26,12 +26,11 @@ pub fn process_block(
         // ---- Assignment / variables --------------------------------------
         // {=(name):value} / {let(name):value} / {var(name):value}
         "=" | "let" | "var" => {
-            if let Some(var) = parameter {
-                if !var.is_empty() {
+            if let Some(var) = parameter
+                && !var.is_empty() {
                     ctx.vars
                         .insert(var.to_string(), payload.unwrap_or("").to_string());
                 }
-            }
             String::new()
         }
 
@@ -193,11 +192,10 @@ pub fn process_block(
                 return String::new();
             }
             // Digit shorthand: {1} == {args(1)}
-            if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit()) {
-                if let Some(v) = ctx.get_var("args", Some(name), payload) {
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit())
+                && let Some(v) = ctx.get_var("args", Some(name), payload) {
                     return v;
                 }
-            }
             // Built-in / user variable lookup.
             if let Some(v) = ctx.get_var(name, parameter, payload) {
                 return v;
@@ -288,13 +286,12 @@ fn split_pipe(s: &str) -> Vec<String> {
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                if next == '|' {
+            if let Some(&next) = chars.peek()
+                && next == '|' {
                     cur.push('|');
                     chars.next();
                     continue;
                 }
-            }
             cur.push('\\');
         } else if c == '|' {
             parts.push(std::mem::take(&mut cur));
@@ -575,8 +572,8 @@ fn ordinal(parameter: Option<&str>, payload: &str, name: &str) -> String {
 }
 
 fn ordinal_suffix(i: i64) -> &'static str {
-    let r = (i % 10) as i64;
-    let tens = (i / 10 % 10) as i64;
+    let r = (i % 10);
+    let tens = (i / 10 % 10);
     let start = if tens != 1 && r < 4 { r } else { 0 } as usize;
     const S: &[u8] = b"tsnrhtdd";
     let a = S[start] as char;
@@ -595,7 +592,7 @@ fn comma_format(n: i64) -> String {
     let mut out = String::new();
     let len = digits.len();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -718,11 +715,10 @@ fn parse_iso(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
             return Some(Utc.from_utc_datetime(&ndt));
         }
-        if fmt == "%Y-%m-%d" {
-            if let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
+        if fmt == "%Y-%m-%d"
+            && let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
                 return Some(Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0)?));
             }
-        }
     }
     None
 }
@@ -757,11 +753,10 @@ fn embed_block(parameter: Option<&str>, payload: Option<&str>, output: &mut TagO
         }
     }
     if parameter.is_none() {
-        if let Some(p) = payload.map(|p| p.trim()) {
-            if p.starts_with('{') {
+        if let Some(p) = payload.map(|p| p.trim())
+            && p.starts_with('{') {
                 merge_embed_json(p, output);
             }
-        }
         return;
     }
 

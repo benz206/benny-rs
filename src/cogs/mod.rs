@@ -173,7 +173,7 @@ impl CogManager {
         full: Option<Guild>,
     ) {
         for cog in &self.cogs {
-            cog.on_guild_delete(ctx, incomplete.clone(), full.clone())
+            cog.on_guild_delete(ctx, incomplete, full.clone())
                 .await;
         }
     }

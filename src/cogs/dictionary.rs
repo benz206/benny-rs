@@ -123,8 +123,8 @@ impl Cog for DictionaryCog {
         let message_id = interaction.message.id.get();
 
         // Owner check: only the original invoker may use the dropdown.
-        if let Some(author_id) = SESSIONS.get(&message_id) {
-            if interaction.user.id.get() != *author_id {
+        if let Some(author_id) = SESSIONS.get(&message_id)
+            && interaction.user.id.get() != *author_id {
                 let _ = interaction
                     .create_response(
                         &ctx.http,
@@ -137,7 +137,6 @@ impl Cog for DictionaryCog {
                     .await;
                 return;
             }
-        }
 
         // Recover the word from the embed title ("<word> Definition").
         let title = interaction

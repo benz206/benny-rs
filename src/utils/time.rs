@@ -17,11 +17,10 @@ pub fn parse_when(input: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         return Some(dt);
     }
 
-    if let Some(dur) = super::parse::parse_duration(input) {
-        if let Ok(chrono_dur) = chrono::Duration::from_std(dur) {
+    if let Some(dur) = super::parse::parse_duration(input)
+        && let Ok(chrono_dur) = chrono::Duration::from_std(dur) {
             return now.checked_add_signed(chrono_dur);
         }
-    }
 
     None
 }

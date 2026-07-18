@@ -346,8 +346,8 @@ fn compute_file_stats() -> FileStats {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                if let Ok(text) = fs::read_to_string(&path) {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && let Ok(text) = fs::read_to_string(&path) {
                     let l = text.lines().count() as u64;
                     let c = text.chars().count() as u64;
                     files += 1;
@@ -355,7 +355,6 @@ fn compute_file_stats() -> FileStats {
                     chars += c;
                     per_file.push((path.to_string_lossy().replace('\\', "/"), l));
                 }
-            }
         }
     }
 
