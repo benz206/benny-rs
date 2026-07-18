@@ -18,6 +18,9 @@ pub struct AfkEntry {
     pub set_at: i64, // Unix timestamp
 }
 
+// Fields beyond `content` are only read by the dormant TagsCog (disabled while
+// the TagScript engine is off); the live HTTP tags API still writes them.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Tag {
     pub name: String,
@@ -128,9 +131,6 @@ impl AppState {
         }
     }
 
-    pub fn http(&self) -> &HttpClient {
-        &self.http
-    }
     pub fn servers_orm(&self) -> &DatabaseConnection {
         &self.servers_orm
     }

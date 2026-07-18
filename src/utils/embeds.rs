@@ -17,14 +17,6 @@ pub fn error_embed(description: &str) -> CreateEmbed {
         .timestamp(Timestamp::now())
 }
 
-pub fn info_embed(title: &str, description: &str) -> CreateEmbed {
-    CreateEmbed::new()
-        .title(title)
-        .description(description)
-        .color(colors::BLURPLE)
-        .timestamp(Timestamp::now())
-}
-
 pub fn warning_embed(description: &str) -> CreateEmbed {
     CreateEmbed::new()
         .title("Warning")

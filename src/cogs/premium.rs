@@ -37,10 +37,6 @@ impl PremiumLevel {
         }
     }
 
-    pub fn as_u8(self) -> u8 {
-        self as u8
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             Self::None => "None",
@@ -71,13 +67,11 @@ impl PremiumLevel {
     }
 }
 
-pub struct PremiumCog {
-    state: Arc<AppState>,
-}
+pub struct PremiumCog;
 
 impl PremiumCog {
-    pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self { state })
+    pub fn new(_state: Arc<AppState>) -> Arc<Self> {
+        Arc::new(Self)
     }
 }
 

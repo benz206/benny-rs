@@ -25,13 +25,11 @@ struct FileStats {
 
 static FILE_STATS: LazyLock<FileStats> = LazyLock::new(compute_file_stats);
 
-pub struct BaseCog {
-    state: Arc<AppState>,
-}
+pub struct BaseCog;
 
 impl BaseCog {
-    pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self { state })
+    pub fn new(_state: Arc<AppState>) -> Arc<Self> {
+        Arc::new(Self)
     }
 }
 

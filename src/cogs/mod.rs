@@ -291,6 +291,9 @@ pub mod roles;
 pub mod sentinel;
 pub mod settings;
 pub mod starboard;
+// Dormant while the TagScript engine is disabled (see tagscript/mod.rs); the
+// cog is not registered in main.rs, so its items are unused by design.
+#[allow(dead_code)]
 pub mod tags;
 pub mod translate;
 pub mod welcome;

@@ -21,13 +21,11 @@ const AVATAR_DELETE_PREFIX: &str = "info:avatar:delete:";
 /// How many role mentions to list in a member card before truncating.
 const MAX_ROLES_SHOWN: usize = 42;
 
-pub struct InfoCog {
-    state: Arc<AppState>,
-}
+pub struct InfoCog;
 
 impl InfoCog {
-    pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self { state })
+    pub fn new(_state: Arc<AppState>) -> Arc<Self> {
+        Arc::new(Self)
     }
 }
 

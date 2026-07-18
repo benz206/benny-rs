@@ -63,7 +63,6 @@ struct PendingRoleAll {
     guild_id: u64,
     role_id: u64,
     action: BulkAction,
-    author_id: u64,
     member_ids: Vec<u64>,
 }
 
@@ -665,7 +664,6 @@ async fn do_roleall(
             guild_id: guild_id.get(),
             role_id: role_id.get(),
             action,
-            author_id,
             member_ids,
         },
         500,

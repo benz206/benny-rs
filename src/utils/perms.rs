@@ -4,8 +4,7 @@
 //! `moderation.rs` and `roles.rs`; this is the single source of truth so every
 //! cog gates writes the same way.
 
-use crate::utils::embeds::error_embed;
-use serenity::all::{Context, CreateMessage, GuildId, Message, Permissions, UserId};
+use serenity::all::{Context, GuildId, Permissions, UserId};
 
 /// Effective guild permissions for `user_id`, preferring the gateway cache and
 /// falling back to a partial-guild HTTP fetch on a cold cache.
@@ -27,28 +26,4 @@ pub async fn has_perm(ctx: &Context, guild_id: GuildId, user_id: u64, perm: Perm
         .await
         .map(|p| p.contains(Permissions::ADMINISTRATOR) || p.contains(perm))
         .unwrap_or(false)
-}
-
-/// Enforce that the message author holds `perm` (ADMINISTRATOR always passes).
-/// On failure, replies with an error embed and returns false.
-pub async fn require_perm(
-    ctx: &Context,
-    msg: &Message,
-    guild_id: GuildId,
-    perm: Permissions,
-    label: &str,
-) -> bool {
-    if has_perm(ctx, guild_id, msg.author.id.get(), perm).await {
-        return true;
-    }
-    let _ = msg
-        .channel_id
-        .send_message(
-            &ctx.http,
-            CreateMessage::new().embed(error_embed(&format!(
-                "You need the **{label}** permission to use this command."
-            ))),
-        )
-        .await;
-    false
 }

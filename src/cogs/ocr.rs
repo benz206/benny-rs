@@ -5,13 +5,11 @@ use async_trait::async_trait;
 use serenity::all::{Attachment, CreateAllowedMentions};
 use std::sync::Arc;
 
-pub struct OcrCog {
-    state: Arc<AppState>,
-}
+pub struct OcrCog;
 
 impl OcrCog {
-    pub fn new(state: Arc<AppState>) -> Arc<Self> {
-        Arc::new(Self { state })
+    pub fn new(_state: Arc<AppState>) -> Arc<Self> {
+        Arc::new(Self)
     }
 }
 
