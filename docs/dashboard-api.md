@@ -3,6 +3,11 @@
 This is the hand-off doc for wiring a web dashboard to the bot's `/api/v1`. The
 full contract is in [`openapi.yaml`](./openapi.yaml).
 
+That spec is mirrored byte-for-byte as `openapi/benny-api.yaml` in the
+benny-dashboard repo, which generates its TypeScript client from it
+(`bun run gen:api`). **Change both copies together** — a drift there is
+invisible until a request 400s at runtime.
+
 ## Architecture (read this first)
 
 ```
@@ -201,7 +206,15 @@ const res = await fetch(`${process.env.BENNY_API_BASE_URL}/guilds/${gid}/prefixe
   replacements). `PATCH` (tags only) is a partial update.
 - Reuse the bot's limits: ≤15 prefixes (≤25 chars each), ≤25 autoroles, tag name
   ≤32 chars (`[A-Za-z0-9_-]`, not a reserved word), tag content ≤2000 chars,
-  sentinel thresholds in `[0.0, 1.0]`.
+  sentinel thresholds in `[0.0, 1.0]`, ≤50 level rewards, automod
+  `timeout_secs` in `[60, 2419200]`.
+- Levels, starboard and automod each keep a module-private `CONFIG_CACHE` inside
+  their cog. Their handlers write through the cog's own `update_config` rather
+  than touching SeaORM directly, so the row and that cache can't diverge.
+- `/music` is the one resource with no database behind it: it reads the guild's
+  live Lavalink player. `connected: false` means the bot isn't in a voice
+  channel here; `available: false` means there is no Lavalink node at all.
+  Neither is an error, so both return `200`.
 
 ## Out of scope for v1 (planned)
 

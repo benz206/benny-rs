@@ -55,9 +55,16 @@ A mini template interpreter used by the Tags cog and Welcome/Goodbye messages. `
 
 `spawn_reminder_task(state, http)` is called once from `on_ready` (guarded by `AtomicBool`). It polls `reminders_reminders WHERE fire_at <= now()` every 30 seconds and sends DMs.
 
-### HTTP API (`src/http.rs`)
+### HTTP API (`src/http/`)
 
-Axum server on `127.0.0.1:8080`. Endpoints: `GET /` (alive), `GET /ping` (latency history), `GET /health` (service status), `GET /stats` (version + uptime).
+Axum server on `127.0.0.1:8080`, in two tiers:
+
+- **Public, always on** — `GET /` (alive), `GET /ping` (latency history), `GET /health` (service status), `GET /stats` (version + uptime).
+- **`/api/v1`, the dashboard control plane** — mounted *only* when `config.dashboard_api_token` is set, so with no token configured the tree returns 404. `auth.rs` checks the bearer token in constant time plus an `X-Actor-Id` header (blacklist check + audit log); `v1/` holds the resources, split into `config.rs` (prefixes, welcome/goodbye, logging, sentinel, roles, moderation), `features.rs` (levels, starboard, automod, giveaways), `music.rs`, `tags.rs` and `cases.rs`.
+
+Two rules hold across `v1/`: snowflakes are **strings** on the wire, and a write updates the DB *and* the matching cache in the same handler. For levels/starboard/automod that cache is private to the cog, so those handlers call the cog's own `pub(crate) update_config` instead of writing through SeaORM themselves.
+
+The contract lives in `docs/openapi.yaml`, mirrored byte-for-byte in the benny-dashboard repo as `openapi/benny-api.yaml` (it generates the TS client from it). Change both copies together — see `docs/dashboard-api.md`.
 
 ### Config (`src/config.rs`)
 

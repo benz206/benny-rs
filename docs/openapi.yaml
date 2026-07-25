@@ -20,6 +20,9 @@ info:
     **IDs.** Every Discord snowflake is represented as a **string** in both
     requests and responses (JSON numbers lose precision above 2^53).
 
+    **Source of truth.** This file is mirrored byte-for-byte as
+    `docs/openapi.yaml` in the benny-rs repo. Change both copies together.
+
     **Out of scope for v1 (planned).** Per-user resources — reminders
     (`reminders_reminders`) and user settings (`settings_users`: timezone,
     patron level, blacklist) — are not exposed yet. They are planned for a
@@ -43,6 +46,10 @@ tags:
     description: Per-guild custom tags (CRUD).
   - name: moderation
     description: Read-only moderation views.
+  - name: features
+    description: Feature-module config (leveling, starboard, automod) and their read-only views.
+  - name: music
+    description: Live Lavalink playback state and transport controls.
 
 paths:
   # ---- public (unauthenticated) ------------------------------------------
@@ -526,6 +533,278 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  # ---- features: leveling ------------------------------------------------
+  /api/v1/guilds/{gid}/levels:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [features]
+      summary: Get the leveling config
+      responses:
+        "200":
+          description: Leveling config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LevelsConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [features]
+      summary: Replace the leveling config
+      description: |
+        Writes through `cogs::levels::update_config`, so the row and the cog's
+        in-memory config cache are updated together. `xp_min` must be at least 1
+        and no greater than `xp_max` (capped at 1000); `cooldown_secs` is the
+        per-member XP cooldown, between 1 and 3600.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LevelsConfig" }
+      responses:
+        "200":
+          description: Stored leveling config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LevelsConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/guilds/{gid}/levels/rewards:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [features]
+      summary: List level role rewards (ascending by level)
+      responses:
+        "200":
+          description: Role rewards.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RewardsBody" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [features]
+      summary: Replace the full reward set
+      description: |
+        Replaces every reward for the guild (at most 50, one role per level),
+        then reloads the cog's rewards cache.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RewardsBody" }
+      responses:
+        "200":
+          description: Stored rewards.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RewardsBody" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/guilds/{gid}/levels/leaderboard:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [features]
+      summary: Top 25 members by XP
+      responses:
+        "200":
+          description: Leaderboard.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Leaderboard" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- features: starboard -----------------------------------------------
+  /api/v1/guilds/{gid}/starboard:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [features]
+      summary: Get the starboard config
+      responses:
+        "200":
+          description: Starboard config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StarboardConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [features]
+      summary: Replace the starboard config
+      description: |
+        Writes through `cogs::starboard::update_config`. A `channel_id` is
+        required to enable the starboard, and `emoji` is matched verbatim
+        against the reaction, so it must be the exact emoji (unicode, or
+        `<:name:id>` for a custom one).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StarboardConfig" }
+      responses:
+        "200":
+          description: Stored starboard config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StarboardConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- features: automod -------------------------------------------------
+  /api/v1/guilds/{gid}/automod:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [features]
+      summary: Get the automod and anti-raid config
+      responses:
+        "200":
+          description: Automod config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomodConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [features]
+      summary: Replace the automod and anti-raid config
+      description: |
+        Writes through `cogs::automod::update_config`. Zeroing a numeric limit
+        disables that filter; `timeout_secs` is clamped by the cog to 60 seconds
+        through 28 days and is validated to that range here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutomodConfig" }
+      responses:
+        "200":
+          description: Stored automod config.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomodConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- features: giveaways (read-only) -----------------------------------
+  /api/v1/guilds/{gid}/giveaways:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [features]
+      summary: List the 50 most recent giveaways with entry counts
+      responses:
+        "200":
+          description: Giveaways.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GiveawaysResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---- music -------------------------------------------------------------
+  /api/v1/guilds/{gid}/music:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [music]
+      summary: Current playback state
+      description: |
+        Read straight from the guild's Lavalink player — there is no database
+        behind this resource. A guild the bot isn't playing in returns
+        `connected: false` rather than a 404; `available: false` means the whole
+        music module is down (no Lavalink node).
+      responses:
+        "200":
+          description: Playback state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MusicState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/guilds/{gid}/music/pause:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    post:
+      tags: [music]
+      summary: Pause or resume playback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paused: { type: boolean }
+              required: [paused]
+      responses:
+        "200":
+          description: Playback state after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MusicState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/guilds/{gid}/music/skip:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    post:
+      tags: [music]
+      summary: Skip the current track
+      responses:
+        "200":
+          description: Playback state after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MusicState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/guilds/{gid}/music/stop:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    post:
+      tags: [music]
+      summary: Stop playback and clear the queue
+      responses:
+        "200":
+          description: Playback state after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MusicState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/guilds/{gid}/music/volume:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    put:
+      tags: [music]
+      summary: Set the playback volume
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                volume: { type: integer, minimum: 1, maximum: 100 }
+              required: [volume]
+      responses:
+        "200":
+          description: Playback state after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MusicState" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -614,7 +893,25 @@ components:
         sentinel: { $ref: "#/components/schemas/SentinelConfig" }
         roles: { $ref: "#/components/schemas/RolesConfig" }
         moderation: { $ref: "#/components/schemas/ModerationConfig" }
-      required: [guild_id, prefixes, welcome, goodbye, logging, sentinel, roles, moderation]
+        levels: { $ref: "#/components/schemas/LevelsConfig" }
+        starboard: { $ref: "#/components/schemas/StarboardConfig" }
+        automod: { $ref: "#/components/schemas/AutomodConfig" }
+        music: { $ref: "#/components/schemas/MusicState" }
+      required:
+        [
+          guild_id,
+          prefixes,
+          welcome,
+          goodbye,
+          logging,
+          sentinel,
+          roles,
+          moderation,
+          levels,
+          starboard,
+          automod,
+          music,
+        ]
 
     PrefixesBody:
       type: object
@@ -770,6 +1067,178 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Mute" }
       required: [mutes]
+
+    LevelsConfig:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        announce:
+          type: boolean
+          description: Whether to post a level-up message at all.
+        levelup_channel_id:
+          type: [string, "null"]
+          description: Where to announce. Null announces in the channel the member spoke in.
+        xp_min: { type: integer, minimum: 1, maximum: 1000 }
+        xp_max: { type: integer, minimum: 1, maximum: 1000 }
+        cooldown_secs: { type: integer, minimum: 1, maximum: 3600 }
+      required: [enabled, announce, xp_min, xp_max, cooldown_secs]
+
+    Reward:
+      type: object
+      description: A role granted when a member reaches `level`.
+      properties:
+        level: { type: integer, minimum: 1 }
+        role_id: { type: string, description: Role id snowflake (string). }
+      required: [level, role_id]
+
+    RewardsBody:
+      type: object
+      properties:
+        rewards:
+          type: array
+          items: { $ref: "#/components/schemas/Reward" }
+          maxItems: 50
+      required: [rewards]
+
+    LeaderboardEntry:
+      type: object
+      properties:
+        rank: { type: integer, minimum: 1 }
+        user_id: { type: string }
+        xp: { type: integer, description: Total accumulated XP. }
+        level: { type: integer }
+        xp_into_level: { type: integer, description: XP earned into the current level. }
+        xp_for_next: { type: integer, description: XP the next level costs. }
+      required: [rank, user_id, xp, level, xp_into_level, xp_for_next]
+
+    Leaderboard:
+      type: object
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/LeaderboardEntry" }
+      required: [entries]
+
+    StarboardConfig:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        channel_id:
+          type: [string, "null"]
+          description: Where starred messages are mirrored. Required to enable.
+        threshold: { type: integer, minimum: 1, description: Reactions needed to post. }
+        emoji:
+          type: string
+          maxLength: 64
+          description: Matched verbatim against the reaction emoji.
+        self_star: { type: boolean, description: Whether an author's own star counts. }
+      required: [enabled, threshold, emoji, self_star]
+
+    AutomodConfig:
+      type: object
+      description: |
+        Message filters plus anti-raid. A zeroed numeric limit disables that
+        filter.
+      properties:
+        enabled: { type: boolean }
+        log_channel_id:
+          type: [string, "null"]
+        anti_invite: { type: boolean }
+        anti_link: { type: boolean }
+        mention_limit: { type: integer, minimum: 0 }
+        spam_msgs: { type: integer, minimum: 0 }
+        spam_secs: { type: integer, minimum: 0 }
+        punishment: { type: string, enum: [delete, warn, timeout, kick] }
+        timeout_secs:
+          type: integer
+          minimum: 60
+          maximum: 2419200
+          description: Timeout length when `punishment` is `timeout` (60s to 28d).
+        raid_enabled: { type: boolean }
+        raid_joins: { type: integer, minimum: 0 }
+        raid_secs: { type: integer, minimum: 0 }
+        min_account_age_days: { type: integer, minimum: 0 }
+        raid_action: { type: string, enum: [alert, kick] }
+      required:
+        [
+          enabled,
+          anti_invite,
+          anti_link,
+          mention_limit,
+          spam_msgs,
+          spam_secs,
+          punishment,
+          timeout_secs,
+          raid_enabled,
+          raid_joins,
+          raid_secs,
+          min_account_age_days,
+          raid_action,
+        ]
+
+    Giveaway:
+      type: object
+      properties:
+        id: { type: integer }
+        channel_id: { type: string }
+        message_id: { type: string }
+        prize: { type: string }
+        winners: { type: integer }
+        host_id: { type: string }
+        ends_at: { type: integer, description: Unix seconds. }
+        ended: { type: boolean }
+        entries: { type: integer, description: Current entry count. }
+      required: [id, channel_id, message_id, prize, winners, host_id, ends_at, ended, entries]
+
+    GiveawaysResponse:
+      type: object
+      properties:
+        giveaways:
+          type: array
+          items: { $ref: "#/components/schemas/Giveaway" }
+      required: [giveaways]
+
+    Track:
+      type: object
+      properties:
+        title: { type: string }
+        author: { type: string }
+        uri: { type: [string, "null"] }
+        artwork_url: { type: [string, "null"] }
+        length_ms: { type: integer }
+        is_stream: { type: boolean }
+        source: { type: string, description: Lavalink source name, e.g. "youtube". }
+        requester_id:
+          type: [string, "null"]
+          description: The Discord user who queued it, when known.
+      required: [title, author, length_ms, is_stream, source]
+
+    MusicState:
+      type: object
+      properties:
+        available:
+          type: boolean
+          description: False when the bot has no Lavalink node at all.
+        connected:
+          type: boolean
+          description: False when the bot is not in a voice channel in this guild.
+        playing: { type: boolean, description: A track is loaded and not paused. }
+        paused: { type: boolean }
+        volume: { type: integer }
+        position_ms: { type: integer, description: Playhead within the current track. }
+        now_playing:
+          oneOf:
+            - { $ref: "#/components/schemas/Track" }
+            - { type: "null" }
+        queue:
+          type: array
+          description: The first 100 up-next tracks.
+          items: { $ref: "#/components/schemas/Track" }
+        queue_length:
+          type: integer
+          description: Full up-next length, which may exceed `queue`.
+      required:
+        [available, connected, playing, paused, volume, position_ms, queue, queue_length]
 
 # Bearer + actor id are required on every operation except those that set
 # `security: []` (the public endpoints).
