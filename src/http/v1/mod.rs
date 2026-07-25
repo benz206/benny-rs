@@ -9,6 +9,8 @@
 
 mod cases;
 mod config;
+mod features;
+mod music;
 mod tags;
 
 use axum::{Json, Router, extract::State, routing::get};
@@ -25,6 +27,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/guilds", get(list_guilds))
         .route("/guilds/{gid}", get(overview))
         .merge(config::router())
+        .merge(features::router())
+        .merge(music::router())
         .merge(tags::router())
         .merge(cases::router())
 }
@@ -41,17 +45,21 @@ pub(super) fn opt_id_to_string(v: Option<i64>) -> Option<String> {
     v.map(id_to_string)
 }
 
+/// Parse a required string id from a request body into a stored `i64`.
+pub(super) fn parse_id(s: &str) -> ApiResult<i64> {
+    s.trim()
+        .parse::<u64>()
+        .map(|n| n as i64)
+        .map_err(|_| ApiError::bad_request("invalid id (expected a numeric snowflake string)"))
+}
+
 /// Parse an optional string id from a request body into a stored `i64`. Treats
 /// an empty/whitespace string the same as absent (`None`).
 pub(super) fn parse_opt_id(s: &Option<String>) -> ApiResult<Option<i64>> {
     match s {
         None => Ok(None),
         Some(v) if v.trim().is_empty() => Ok(None),
-        Some(v) => v
-            .trim()
-            .parse::<u64>()
-            .map(|n| Some(n as i64))
-            .map_err(|_| ApiError::bad_request("invalid id (expected a numeric snowflake string)")),
+        Some(v) => parse_id(v).map(Some),
     }
 }
 
@@ -98,7 +106,8 @@ async fn list_guilds(State(state): State<Arc<AppState>>) -> Json<GuildList> {
     Json(GuildList { guild_ids })
 }
 
-/// Aggregated per-guild overview: every config section in one response.
+/// Aggregated per-guild overview: every config section plus the live music
+/// state in one response, so the dashboard landing page needs a single call.
 #[derive(Serialize)]
 struct GuildOverview {
     guild_id: String,
@@ -109,6 +118,10 @@ struct GuildOverview {
     sentinel: config::SentinelConfig,
     roles: config::RolesConfig,
     moderation: config::ModerationConfig,
+    levels: features::LevelsConfig,
+    starboard: features::StarboardConfig,
+    automod: features::AutomodConfig,
+    music: music::MusicState,
 }
 
 async fn overview(
@@ -124,5 +137,9 @@ async fn overview(
         sentinel: config::read_sentinel(&state, gid).await?,
         roles: config::read_roles(&state, gid).await?,
         moderation: config::read_moderation(&state, gid).await?,
+        levels: features::read_levels(&state, gid).await?,
+        starboard: features::read_starboard(&state, gid).await?,
+        automod: features::read_automod(&state, gid).await?,
+        music: music::read_state(&state, gid).await,
     }))
 }

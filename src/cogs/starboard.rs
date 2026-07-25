@@ -211,7 +211,7 @@ impl Cog for StarboardCog {
 // ---- config helpers ---------------------------------------------------------
 
 /// Config row defaults for a guild that never touched the starboard.
-fn default_model(gid: u64) -> starboard_config::Model {
+pub(crate) fn default_model(gid: u64) -> starboard_config::Model {
     starboard_config::Model {
         guild_id: gid as i64,
         enabled: false,
@@ -223,7 +223,7 @@ fn default_model(gid: u64) -> starboard_config::Model {
 }
 
 /// Load-modify-upsert a guild's starboard config and refresh the cache.
-async fn update_config<F: FnOnce(&mut starboard_config::Model)>(
+pub(crate) async fn update_config<F: FnOnce(&mut starboard_config::Model)>(
     state: &AppState,
     gid: u64,
     f: F,

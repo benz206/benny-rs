@@ -298,7 +298,7 @@ fn is_spamming(cfg: &automod_config::Model, gid: u64, uid: u64) -> bool {
 }
 
 /// Config row with defaults for a guild that has never touched automod.
-fn default_model(gid: u64) -> automod_config::Model {
+pub(crate) fn default_model(gid: u64) -> automod_config::Model {
     automod_config::Model {
         guild_id: gid as i64,
         enabled: false,
@@ -319,7 +319,7 @@ fn default_model(gid: u64) -> automod_config::Model {
 }
 
 /// Load-modify-upsert the guild's config and refresh the cache.
-async fn update_config<F: FnOnce(&mut automod_config::Model)>(
+pub(crate) async fn update_config<F: FnOnce(&mut automod_config::Model)>(
     state: &AppState,
     gid: u64,
     f: F,

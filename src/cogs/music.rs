@@ -162,7 +162,7 @@ fn now_playing_embed(track: &TrackData, title: &str) -> CreateEmbed {
     embed
 }
 
-fn requester_id(track: &TrackData) -> Option<u64> {
+pub(crate) fn requester_id(track: &TrackData) -> Option<u64> {
     track
         .user_data
         .as_ref()

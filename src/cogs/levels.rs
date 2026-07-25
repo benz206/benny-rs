@@ -168,7 +168,7 @@ fn xp_for_level(level: i64) -> i64 {
 }
 
 /// Convert total accumulated XP into `(level, xp_into_level, xp_needed_for_next)`.
-fn level_from_xp(total: i64) -> (i64, i64, i64) {
+pub(crate) fn level_from_xp(total: i64) -> (i64, i64, i64) {
     let mut level = 0i64;
     let mut remaining = total;
     loop {
@@ -184,7 +184,7 @@ fn level_from_xp(total: i64) -> (i64, i64, i64) {
 // ---- config helpers ---------------------------------------------------------
 
 /// Config row defaults for a guild that has never touched leveling.
-fn default_model(gid: u64) -> levels_config::Model {
+pub(crate) fn default_model(gid: u64) -> levels_config::Model {
     levels_config::Model {
         guild_id: gid as i64,
         enabled: false,
@@ -197,7 +197,7 @@ fn default_model(gid: u64) -> levels_config::Model {
 }
 
 /// Load-modify-upsert the guild's leveling config and refresh the cache.
-async fn update_config<F: FnOnce(&mut levels_config::Model)>(
+pub(crate) async fn update_config<F: FnOnce(&mut levels_config::Model)>(
     state: &AppState,
     gid: u64,
     f: F,
@@ -256,7 +256,7 @@ async fn apply_setting<F: FnOnce(&mut levels_config::Model)>(
 }
 
 /// Reload a guild's role rewards from the DB into `REWARDS_CACHE`.
-async fn refresh_rewards_cache(state: &AppState, gid: u64) {
+pub(crate) async fn refresh_rewards_cache(state: &AppState, gid: u64) {
     let rows = levels_rewards::Entity::find()
         .filter(levels_rewards::Column::GuildId.eq(gid as i64))
         .all(state.servers_orm())
