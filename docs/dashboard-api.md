@@ -56,8 +56,14 @@ Add to the bot's `config.json` (in the bot's working directory):
   directly, so this is defense-in-depth; set it to your dashboard origin or omit
   it. When omitted, no cross-origin browser requests are permitted.
 
-The HTTP server binds to `127.0.0.1:8080` (loopback only). It is **not** exposed
-to the internet on its own — put it behind a tunnel or reverse proxy (below).
+The HTTP server binds to `127.0.0.1:8080` by default (loopback only), overridable
+with `dashboard_api_addr`. It is **not** exposed to the internet on its own — put
+it behind a tunnel or reverse proxy (below).
+
+> **The production box uses `127.0.0.1:8088`**, because a `docker-proxy`
+> container already owns `0.0.0.0:8080` there. If you copy the 8080 examples
+> below onto that box, the tunnel/proxy will silently forward to docker-proxy
+> instead of the bot. Check `dashboard_api_addr` in `config.json` and match it.
 
 Hardening that is always on for `/api/v1`: constant-time token compare, per-actor
 rate limiting (100 requests / 10s), a 64 KiB request-body cap, a 15s per-request
@@ -85,7 +91,8 @@ tunnel: benny-api
 credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
 ingress:
   - hostname: api.your-domain.com
-    service: http://127.0.0.1:8080
+    # Match dashboard_api_addr from config.json (8088 on the prod box).
+    service: http://127.0.0.1:8088
   - service: http_status:404
 ```
 
@@ -105,7 +112,7 @@ and let Caddy handle TLS.
 
 ```caddy
 api.your-domain.com {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8088
 }
 ```
 
@@ -120,7 +127,7 @@ to the API surface and add an extra guard at the edge:
 api.your-domain.com {
     @api path /api/*
     handle @api {
-        reverse_proxy 127.0.0.1:8080
+        reverse_proxy 127.0.0.1:8088
     }
     respond 404
 }
