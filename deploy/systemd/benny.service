@@ -1,0 +1,17 @@
+[Unit]
+Description=benny-rs Discord bot (tmux session "benny")
+After=network-online.target lavalink.service
+Wants=network-online.target lavalink.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=ubuntu
+WorkingDirectory=/home/ubuntu/benny-rs
+ExecStartPre=/bin/sleep 15
+ExecStart=/bin/sh -c 'tmux has-session -t benny 2>/dev/null || tmux new-session -d -s benny "./target/release/benny-rs 2>&1 | tee run.log"'
+ExecStop=/usr/bin/tmux kill-session -t benny
+KillMode=none
+
+[Install]
+WantedBy=multi-user.target

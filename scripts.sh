@@ -9,7 +9,8 @@
 #   ~/benny-rs   git clone of main; config.json lives here (untracked), run from this dir
 #   ~/lavalink   Lavalink.jar (v4.2.2) + application.yml (127.0.0.1:2333)
 # Two tmux sessions: `lavalink` (start FIRST) then `benny` (the bot).
-# tmux does NOT survive a reboot — after the box restarts, run `./scripts.sh start`.
+# systemd units in deploy/systemd/ recreate both sessions at boot; install them
+# once with `./scripts.sh install-services`.
 #
 set -euo pipefail
 
@@ -54,6 +55,13 @@ cmd_deploy() {
   remote "cd $BOT_DIR && git pull --ff-only && $BUILD_ENV cargo build --release"
   cmd_restart
   echo "Deployed."
+}
+
+cmd_install-services() {
+  scp deploy/systemd/lavalink.service deploy/systemd/benny.service "$SSH_HOST:/tmp/"
+  remote "sudo mv /tmp/lavalink.service /tmp/benny.service /etc/systemd/system/ \
+    && sudo systemctl daemon-reload && sudo systemctl enable lavalink benny"
+  echo "Services installed and enabled for boot."
 }
 
 # --- start / stop ------------------------------------------------------------
@@ -121,6 +129,7 @@ Local (Mac):
   clippy        cargo clippy (lint)
   run           cargo run locally (uses dev_token)
   push-config   scp config.json up to the box
+  install-services  install + enable the boot units in deploy/systemd/
 
 Remote (VPS via ssh benny):
   ssh           open a shell on the box

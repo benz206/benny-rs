@@ -1,0 +1,16 @@
+[Unit]
+Description=Lavalink for benny-rs (tmux session "lavalink")
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=ubuntu
+WorkingDirectory=/home/ubuntu/lavalink
+ExecStart=/bin/sh -c 'tmux has-session -t lavalink 2>/dev/null || tmux new-session -d -s lavalink "java -Xmx1G -jar Lavalink.jar 2>&1 | tee lavalink.log"'
+ExecStop=/usr/bin/tmux kill-session -t lavalink
+KillMode=none
+
+[Install]
+WantedBy=multi-user.target
