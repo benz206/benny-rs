@@ -14,7 +14,7 @@ mod music;
 mod tags;
 
 use axum::{Json, Router, extract::State, routing::get};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::auth::{Actor, GuildScope};
@@ -73,6 +73,24 @@ pub(super) fn audit(actor: Actor, gid: u64, resource: &str, action: &str) {
         action,
         "dashboard API mutation"
     );
+}
+
+const DEFAULT_LIMIT: u64 = 25;
+const MAX_LIMIT: u64 = 100;
+
+#[derive(Deserialize)]
+pub(super) struct Pagination {
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+
+impl Pagination {
+    pub(super) fn resolve(&self) -> (u64, u64) {
+        (
+            self.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
+            self.offset.unwrap_or(0),
+        )
+    }
 }
 
 // ---- top-level routes ------------------------------------------------------

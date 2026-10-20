@@ -14,14 +14,11 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::{Deserialize, Serialize};
 
-use super::{audit, id_to_string};
+use super::{Pagination, audit, id_to_string};
 use crate::entities::{mod_cases, mod_timed};
 use crate::http::auth::{Actor, GuildScope};
 use crate::http::error::{ApiError, ApiResult};
 use crate::state::AppState;
-
-const DEFAULT_LIMIT: u64 = 25;
-const MAX_LIMIT: u64 = 100;
 
 pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -32,12 +29,6 @@ pub(super) fn router() -> Router<Arc<AppState>> {
         )
         .route("/guilds/{gid}/mutes", get(list_mutes))
         .route("/guilds/{gid}/mutes/{number}/lift", post(lift_mute))
-}
-
-#[derive(Deserialize)]
-struct Pagination {
-    limit: Option<u64>,
-    offset: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -77,8 +68,7 @@ async fn list_cases(
     GuildScope(gid): GuildScope,
     Query(p): Query<Pagination>,
 ) -> ApiResult<Json<CasesResponse>> {
-    let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let offset = p.offset.unwrap_or(0);
+    let (limit, offset) = p.resolve();
 
     let rows = mod_cases::Entity::find()
         .filter(mod_cases::Column::GuildId.eq(gid as i64))

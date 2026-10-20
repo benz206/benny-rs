@@ -45,9 +45,9 @@ tags:
   - name: tags
     description: Per-guild custom tags (CRUD).
   - name: moderation
-    description: Read-only moderation views.
+    description: The case log and active timed infractions.
   - name: features
-    description: Feature-module config (leveling, starboard, automod) and their read-only views.
+    description: Feature-module config (leveling, starboard, automod) and the views and actions around them.
   - name: music
     description: Live Lavalink playback state and transport controls.
 
@@ -707,6 +707,51 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
 
   # ---- features: starboard -----------------------------------------------
+  /api/v1/guilds/{gid}/levels/users:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    delete:
+      tags: [features]
+      summary: Reset every member's XP
+      description: Deletes all `levels_users` rows for the guild. Reward roles already granted are kept.
+      responses:
+        "204": { description: Reset. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/guilds/{gid}/levels/users/{uid}:
+    parameters:
+      - { $ref: "#/components/parameters/Gid" }
+      - name: uid
+        in: path
+        required: true
+        schema: { type: string }
+        description: Member id (snowflake as a string).
+    put:
+      tags: [features]
+      summary: Set a member's total XP
+      description: Upserts the member's `levels_users` row. Reward roles are not re-synced until they next earn XP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/XpBody" }
+      responses:
+        "200":
+          description: The member's XP and the level it works out to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberXp" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [features]
+      summary: Reset a member's XP
+      responses:
+        "204": { description: Reset. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/guilds/{gid}/starboard:
     parameters: [{ $ref: "#/components/parameters/Gid" }]
     get:
@@ -744,6 +789,29 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
 
   # ---- features: automod -------------------------------------------------
+  /api/v1/guilds/{gid}/starboard/posts:
+    parameters:
+      - { $ref: "#/components/parameters/Gid" }
+      - name: limit
+        in: query
+        required: false
+        schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      - name: offset
+        in: query
+        required: false
+        schema: { type: integer, minimum: 0, default: 0 }
+    get:
+      tags: [features]
+      summary: List starboard posts, most stars first (paginated)
+      responses:
+        "200":
+          description: Starboard posts page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StarboardPosts" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/guilds/{gid}/automod:
     parameters: [{ $ref: "#/components/parameters/Gid" }]
     get:
@@ -779,7 +847,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  # ---- features: giveaways (read-only) -----------------------------------
+  # ---- features: giveaways ----------------------------------------------
   /api/v1/guilds/{gid}/giveaways:
     parameters: [{ $ref: "#/components/parameters/Gid" }]
     get:
@@ -793,6 +861,26 @@ paths:
               schema: { $ref: "#/components/schemas/GiveawaysResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/guilds/{gid}/giveaways/{id}/end:
+    parameters:
+      - { $ref: "#/components/parameters/Gid" }
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+        description: Giveaway id.
+    post:
+      tags: [features]
+      summary: End a giveaway early
+      description: |
+        Same as `/giveaway end`: moves `ends_at` into the past, and the
+        giveaway sweeper (every 30s) draws the winners and edits the message.
+      responses:
+        "202": { description: Scheduled to end on the next sweep. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   # ---- music -------------------------------------------------------------
   /api/v1/guilds/{gid}/music:
@@ -1241,6 +1329,40 @@ components:
           description: Matched verbatim against the reaction emoji.
         self_star: { type: boolean, description: Whether an author's own star counts. }
       required: [enabled, threshold, emoji, self_star]
+
+    StarboardPost:
+      type: object
+      properties:
+        message_id: { type: string, description: The original message. }
+        starboard_message_id: { type: string, description: The copy in the starboard channel. }
+        star_count: { type: integer }
+      required: [message_id, starboard_message_id, star_count]
+
+    StarboardPosts:
+      type: object
+      properties:
+        posts:
+          type: array
+          items: { $ref: "#/components/schemas/StarboardPost" }
+        limit: { type: integer }
+        offset: { type: integer }
+      required: [posts, limit, offset]
+
+    XpBody:
+      type: object
+      properties:
+        xp: { type: integer, minimum: 0, description: New total XP. }
+      required: [xp]
+
+    MemberXp:
+      type: object
+      properties:
+        user_id: { type: string }
+        xp: { type: integer }
+        level: { type: integer }
+        xp_into_level: { type: integer }
+        xp_for_next: { type: integer }
+      required: [user_id, xp, level, xp_into_level, xp_for_next]
 
     AutomodConfig:
       type: object

@@ -1,5 +1,6 @@
-//! Feature-module config: leveling, starboard and automod, plus the read-only
-//! views they imply (level leaderboard, role rewards, active giveaways).
+//! Feature-module config: leveling, starboard and automod, plus the views and
+//! actions they imply (leaderboard and member XP, role rewards, starboard
+//! posts, giveaways).
 //!
 //! These three cogs each keep a module-private `CONFIG_CACHE` that their event
 //! handlers read on the hot path. Rather than duplicate the DB write + cache
@@ -8,8 +9,14 @@
 
 use std::sync::Arc;
 
-use axum::{Json, Router, extract::State, routing::get};
-use sea_orm::sea_query::OnConflict;
+use axum::{
+    Json, Router,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    routing::{delete, get, post, put},
+};
+use chrono::Utc;
+use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set,
 };
@@ -18,13 +25,13 @@ use serde::{Deserialize, Serialize};
 use crate::cogs::{automod, levels, starboard};
 use crate::entities::{
     automod_config, giveaway_entries, giveaways, levels_config, levels_rewards, levels_users,
-    starboard_config,
+    starboard_config, starboard_posts,
 };
 use crate::http::auth::{Actor, GuildScope};
 use crate::http::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
-use super::{audit, id_to_string, opt_id_to_string, parse_id, parse_opt_id};
+use super::{Pagination, audit, id_to_string, opt_id_to_string, parse_id, parse_opt_id};
 
 /// Punishment/raid-action vocabularies accepted by `cogs::automod`.
 const PUNISHMENTS: [&str; 4] = ["delete", "warn", "timeout", "kick"];
@@ -44,12 +51,19 @@ pub(super) fn router() -> Router<Arc<AppState>> {
             get(get_rewards).put(put_rewards),
         )
         .route("/guilds/{gid}/levels/leaderboard", get(get_leaderboard))
+        .route("/guilds/{gid}/levels/users", delete(reset_all_xp))
+        .route(
+            "/guilds/{gid}/levels/users/{uid}",
+            put(put_member_xp).delete(reset_member_xp),
+        )
         .route(
             "/guilds/{gid}/starboard",
             get(get_starboard).put(put_starboard),
         )
+        .route("/guilds/{gid}/starboard/posts", get(get_starboard_posts))
         .route("/guilds/{gid}/automod", get(get_automod).put(put_automod))
         .route("/guilds/{gid}/giveaways", get(get_giveaways))
+        .route("/guilds/{gid}/giveaways/{id}/end", post(end_giveaway))
 }
 
 // ---- levels ----------------------------------------------------------------
@@ -258,6 +272,90 @@ async fn get_leaderboard(
     }))
 }
 
+#[derive(Serialize)]
+struct MemberXp {
+    user_id: String,
+    xp: i64,
+    level: i64,
+    xp_into_level: i64,
+    xp_for_next: i64,
+}
+
+#[derive(Deserialize)]
+struct XpBody {
+    xp: i64,
+}
+
+fn parse_uid(uid: &str) -> ApiResult<i64> {
+    uid.parse::<u64>().map(|n| n as i64).map_err(|_| ApiError::NotFound)
+}
+
+async fn put_member_xp(
+    State(state): State<Arc<AppState>>,
+    GuildScope(gid): GuildScope,
+    actor: Actor,
+    Path((_, uid)): Path<(String, String)>,
+    Json(body): Json<XpBody>,
+) -> ApiResult<Json<MemberXp>> {
+    let uid = parse_uid(&uid)?;
+    if body.xp < 0 {
+        return Err(ApiError::bad_request("xp must not be negative"));
+    }
+
+    levels_users::Entity::insert(levels_users::ActiveModel {
+        guild_id: Set(gid as i64),
+        user_id: Set(uid),
+        xp: Set(body.xp),
+    })
+    .on_conflict(
+        OnConflict::columns([levels_users::Column::GuildId, levels_users::Column::UserId])
+            .update_column(levels_users::Column::Xp)
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await?;
+
+    audit(actor, gid, "levels/users", "put");
+    let (level, xp_into_level, xp_for_next) = levels::level_from_xp(body.xp);
+    Ok(Json(MemberXp {
+        user_id: id_to_string(uid),
+        xp: body.xp,
+        level,
+        xp_into_level,
+        xp_for_next,
+    }))
+}
+
+async fn reset_member_xp(
+    State(state): State<Arc<AppState>>,
+    GuildScope(gid): GuildScope,
+    actor: Actor,
+    Path((_, uid)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let uid = parse_uid(&uid)?;
+    let res = levels_users::Entity::delete_by_id((gid as i64, uid))
+        .exec(state.servers_orm())
+        .await?;
+    if res.rows_affected == 0 {
+        return Err(ApiError::NotFound);
+    }
+    audit(actor, gid, "levels/users", "delete");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn reset_all_xp(
+    State(state): State<Arc<AppState>>,
+    GuildScope(gid): GuildScope,
+    actor: Actor,
+) -> ApiResult<StatusCode> {
+    levels_users::Entity::delete_many()
+        .filter(levels_users::Column::GuildId.eq(gid as i64))
+        .exec(state.servers_orm())
+        .await?;
+    audit(actor, gid, "levels/users", "delete_all");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---- starboard -------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -324,6 +422,47 @@ async fn put_starboard(
 
     audit(actor, gid, "starboard", "put");
     Ok(Json(read_starboard(&state, gid).await?))
+}
+
+#[derive(Serialize)]
+struct StarboardPost {
+    message_id: String,
+    starboard_message_id: String,
+    star_count: i64,
+}
+
+#[derive(Serialize)]
+struct StarboardPosts {
+    posts: Vec<StarboardPost>,
+    limit: u64,
+    offset: u64,
+}
+
+async fn get_starboard_posts(
+    State(state): State<Arc<AppState>>,
+    GuildScope(gid): GuildScope,
+    Query(p): Query<Pagination>,
+) -> ApiResult<Json<StarboardPosts>> {
+    let (limit, offset) = p.resolve();
+    let rows = starboard_posts::Entity::find()
+        .filter(starboard_posts::Column::GuildId.eq(gid as i64))
+        .order_by_desc(starboard_posts::Column::StarCount)
+        .limit(limit)
+        .offset(offset)
+        .all(state.servers_orm())
+        .await?;
+    Ok(Json(StarboardPosts {
+        posts: rows
+            .into_iter()
+            .map(|r| StarboardPost {
+                message_id: id_to_string(r.message_id),
+                starboard_message_id: id_to_string(r.starboard_message_id),
+                star_count: r.star_count,
+            })
+            .collect(),
+        limit,
+        offset,
+    }))
 }
 
 // ---- automod ---------------------------------------------------------------
@@ -440,7 +579,7 @@ async fn put_automod(
     Ok(Json(read_automod(&state, gid).await?))
 }
 
-// ---- giveaways (read only) -------------------------------------------------
+// ---- giveaways -------------------------------------------------------------
 
 #[derive(Serialize)]
 struct Giveaway {
@@ -491,4 +630,32 @@ async fn get_giveaways(
         });
     }
     Ok(Json(GiveawaysResponse { giveaways: out }))
+}
+
+async fn end_giveaway(
+    State(state): State<Arc<AppState>>,
+    GuildScope(gid): GuildScope,
+    actor: Actor,
+    Path((_, id)): Path<(String, i64)>,
+) -> ApiResult<StatusCode> {
+    let g = giveaways::Entity::find_by_id(id)
+        .one(state.servers_orm())
+        .await?
+        .filter(|g| g.guild_id == gid as i64)
+        .ok_or(ApiError::NotFound)?;
+    if g.ended {
+        return Err(ApiError::conflict("that giveaway has already ended"));
+    }
+
+    giveaways::Entity::update_many()
+        .col_expr(
+            giveaways::Column::EndsAt,
+            Expr::value(Utc::now().timestamp() - 1),
+        )
+        .filter(giveaways::Column::Id.eq(id))
+        .exec(state.servers_orm())
+        .await?;
+
+    audit(actor, gid, "giveaways", "end");
+    Ok(StatusCode::ACCEPTED)
 }
