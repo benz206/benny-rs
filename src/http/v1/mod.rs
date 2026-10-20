@@ -9,6 +9,7 @@
 
 mod cases;
 mod config;
+mod directory;
 mod features;
 mod music;
 mod tags;
@@ -27,6 +28,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/guilds", get(list_guilds))
         .route("/guilds/{gid}", get(overview))
         .merge(config::router())
+        .merge(directory::router())
         .merge(features::router())
         .merge(music::router())
         .merge(tags::router())

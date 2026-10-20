@@ -60,7 +60,7 @@ A mini template interpreter used by the Tags cog and Welcome/Goodbye messages. `
 Axum server on `127.0.0.1:8080`, in two tiers:
 
 - **Public, always on** — `GET /` (alive), `GET /ping` (latency history), `GET /health` (service status), `GET /stats` (version + uptime).
-- **`/api/v1`, the dashboard control plane** — mounted *only* when `config.dashboard_api_token` is set, so with no token configured the tree returns 404. `auth.rs` checks the bearer token in constant time plus an `X-Actor-Id` header (blacklist check + audit log); `v1/` holds the resources, split into `config.rs` (prefixes, welcome/goodbye, logging, sentinel, roles, moderation), `features.rs` (levels, starboard, automod, giveaways), `music.rs`, `tags.rs` and `cases.rs`.
+- **`/api/v1`, the dashboard control plane** — mounted *only* when `config.dashboard_api_token` is set, so with no token configured the tree returns 404. `auth.rs` checks the bearer token in constant time plus an `X-Actor-Id` header (blacklist check + audit log); `v1/` holds the resources, split into `config.rs` (prefixes, welcome/goodbye, logging, sentinel, roles, moderation), `features.rs` (levels, starboard, automod, giveaways), `music.rs`, `tags.rs`, `cases.rs` and `directory.rs` (channel and role names, read from the serenity cache that `main.rs` stores in `state.discord_cache` at ready).
 
 Two rules hold across `v1/`: snowflakes are **strings** on the wire, and a write updates the DB *and* the matching cache in the same handler. For levels/starboard/automod that cache is private to the cog, so those handlers call the cog's own `pub(crate) update_config` instead of writing through SeaORM themselves.
 

@@ -94,6 +94,7 @@ pub struct AppState {
     /// Lavalink client, set once at `ready` (see `cogs::music`). Empty until then,
     /// so the bot runs fine without a Lavalink server.
     pub lavalink: Arc<tokio::sync::OnceCell<lavalink_rs::client::LavalinkClient>>,
+    pub discord_cache: Arc<tokio::sync::OnceCell<Arc<serenity::cache::Cache>>>,
     pub latency_ms: Arc<Mutex<Vec<u64>>>,
     pub start_time: Instant,
 }
@@ -126,6 +127,7 @@ impl AppState {
             guild_set: Arc::new(DashMap::new()),
             bot_id: Arc::new(tokio::sync::OnceCell::new()),
             lavalink: Arc::new(tokio::sync::OnceCell::new()),
+            discord_cache: Arc::new(tokio::sync::OnceCell::new()),
             latency_ms: Arc::new(Mutex::new(Vec::with_capacity(64))),
             start_time: Instant::now(),
         }

@@ -183,6 +183,7 @@ async fn main() -> Result<()> {
                 // Context) can authorize guild-scoped routes. `cogs::events`
                 // keeps `guild_set` current on later joins/leaves.
                 let _ = state.bot_id.set(ready.user.id.get());
+                let _ = state.discord_cache.set(ctx.cache.clone());
                 for gid in ctx.cache.guilds() {
                     state.guild_set.insert(gid.get(), ());
                 }

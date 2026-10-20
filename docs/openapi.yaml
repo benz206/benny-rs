@@ -165,6 +165,24 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
 
   # ---- config: prefixes --------------------------------------------------
+  /api/v1/guilds/{gid}/directory:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [guilds]
+      summary: List the guild's channels and roles
+      description: |
+        Read from serenity's cache, so the dashboard can show names instead of
+        ids. Channels are sorted by position; roles highest first, without
+        @everyone.
+      responses:
+        "200":
+          description: Channels and roles.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Directory" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/guilds/{gid}/prefixes:
     parameters: [{ $ref: "#/components/parameters/Gid" }]
     get:
@@ -1094,6 +1112,37 @@ components:
           automod,
           music,
         ]
+
+    DirectoryChannel:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [text, announcement, voice, stage, category, forum, other] }
+        parent_id: { type: [string, "null"], description: Category id. }
+        position: { type: integer }
+      required: [id, name, kind, parent_id, position]
+
+    DirectoryRole:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        color: { type: integer, description: RGB as an integer; 0 means no colour. }
+        position: { type: integer }
+        managed: { type: boolean, description: Owned by an integration and can't be assigned. }
+      required: [id, name, color, position, managed]
+
+    Directory:
+      type: object
+      properties:
+        channels:
+          type: array
+          items: { $ref: "#/components/schemas/DirectoryChannel" }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/DirectoryRole" }
+      required: [channels, roles]
 
     PrefixesBody:
       type: object
