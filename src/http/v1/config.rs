@@ -35,6 +35,9 @@ const MAX_PREFIX_LEN: usize = 25; // cogs::prefixes::MAX_PREFIX_LEN
 const LEGACY_SEP: &str = ":|:"; // cogs::prefixes::LEGACY_SEP
 const MAX_AUTOROLES: usize = 25; // cogs::welcome::MAX_AUTOROLES
 const DEFAULT_THRESHOLD: f64 = 0.85; // sentinels_config schema default
+const MAX_WARN_THRESHOLD: i64 = 50;
+const WARN_ACTIONS: [&str; 3] = ["timeout", "kick", "ban"];
+const MAX_TIMEOUT_SECS: i64 = 28 * 24 * 60 * 60;
 
 pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -53,6 +56,10 @@ pub(super) fn router() -> Router<Arc<AppState>> {
         .route(
             "/guilds/{gid}/moderation",
             put(put_moderation).get(get_moderation),
+        )
+        .route(
+            "/guilds/{gid}/moderation/warnings",
+            get(get_warn_policy).put(put_warn_policy),
         )
 }
 
@@ -748,4 +755,81 @@ async fn put_moderation(
     Ok(Json(ModerationConfig {
         mute_role_id: opt_id_to_string(mute_role_id),
     }))
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub(super) struct WarnPolicy {
+    pub threshold: i64,
+    pub action: String,
+    pub timeout_secs: i64,
+}
+
+async fn read_warn_policy(state: &AppState, gid: u64) -> ApiResult<WarnPolicy> {
+    let row = mod_config::Entity::find_by_id(gid as i64)
+        .one(state.servers_orm())
+        .await?;
+    Ok(match row {
+        Some(m) => WarnPolicy {
+            threshold: m.warn_threshold,
+            action: m.warn_action,
+            timeout_secs: m.warn_timeout_secs,
+        },
+        None => WarnPolicy {
+            threshold: 0,
+            action: "timeout".to_string(),
+            timeout_secs: 3600,
+        },
+    })
+}
+
+async fn get_warn_policy(
+    State(state): State<Arc<AppState>>,
+    GuildScope(gid): GuildScope,
+) -> ApiResult<Json<WarnPolicy>> {
+    Ok(Json(read_warn_policy(&state, gid).await?))
+}
+
+async fn put_warn_policy(
+    State(state): State<Arc<AppState>>,
+    GuildScope(gid): GuildScope,
+    actor: Actor,
+    Json(body): Json<WarnPolicy>,
+) -> ApiResult<Json<WarnPolicy>> {
+    if !(0..=MAX_WARN_THRESHOLD).contains(&body.threshold) {
+        return Err(ApiError::bad_request(format!(
+            "threshold must be between 0 and {MAX_WARN_THRESHOLD}"
+        )));
+    }
+    if !WARN_ACTIONS.contains(&body.action.as_str()) {
+        return Err(ApiError::bad_request(
+            "action must be one of: timeout, kick, ban",
+        ));
+    }
+    if !(1..=MAX_TIMEOUT_SECS).contains(&body.timeout_secs) {
+        return Err(ApiError::bad_request(format!(
+            "timeout_secs must be between 1 and {MAX_TIMEOUT_SECS}"
+        )));
+    }
+
+    mod_config::Entity::insert(mod_config::ActiveModel {
+        guild_id: Set(gid as i64),
+        warn_threshold: Set(body.threshold),
+        warn_action: Set(body.action.clone()),
+        warn_timeout_secs: Set(body.timeout_secs),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::column(mod_config::Column::GuildId)
+            .update_columns([
+                mod_config::Column::WarnThreshold,
+                mod_config::Column::WarnAction,
+                mod_config::Column::WarnTimeoutSecs,
+            ])
+            .to_owned(),
+    )
+    .exec(state.servers_orm())
+    .await?;
+
+    audit(actor, gid, "moderation.warnings", "put");
+    Ok(Json(read_warn_policy(&state, gid).await?))
 }

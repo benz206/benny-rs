@@ -411,6 +411,42 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/guilds/{gid}/moderation/warnings:
+    parameters: [{ $ref: "#/components/parameters/Gid" }]
+    get:
+      tags: [config]
+      summary: Get the warn escalation policy
+      responses:
+        "200":
+          description: Warn policy. A threshold of 0 means escalation is off.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WarnPolicy" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      summary: Set the warn escalation policy
+      description: |
+        Upserts `mod_config.warn_threshold`, `warn_action` and
+        `warn_timeout_secs`, as `/warnings set` does. Threshold is 0-50 (0
+        turns escalation off), action is `timeout`, `kick` or `ban`, and
+        `timeout_secs` is 1-2419200. Read from the DB per warn; no cache.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WarnPolicy" }
+      responses:
+        "200":
+          description: Stored warn policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WarnPolicy" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ---- tags --------------------------------------------------------------
   /api/v1/guilds/{gid}/tags:
     parameters: [{ $ref: "#/components/parameters/Gid" }]
@@ -495,7 +531,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  # ---- moderation (read-only) --------------------------------------------
+  # ---- moderation --------------------------------------------------------
   /api/v1/guilds/{gid}/cases:
     parameters:
       - { $ref: "#/components/parameters/Gid" }
@@ -519,19 +555,71 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/guilds/{gid}/cases/{number}:
+    parameters:
+      - { $ref: "#/components/parameters/Gid" }
+      - { $ref: "#/components/parameters/CaseNumber" }
+    patch:
+      tags: [moderation]
+      summary: Change a case's reason
+      description: Same as the `reason` command. The reason must not be blank.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchCase" }
+      responses:
+        "200":
+          description: The updated case.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Case" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [moderation]
+      summary: Delete a case
+      description: |
+        Same as the `delcase` command: removes the case and any scheduled
+        expiry tied to it, so a deleted temp-mute or temp-ban is never lifted
+        automatically.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/guilds/{gid}/mutes:
     parameters: [{ $ref: "#/components/parameters/Gid" }]
     get:
       tags: [moderation]
-      summary: List active timed mutes
+      summary: List active timed infractions
+      description: Every `mod_timed` row (temp-mutes, temp-bans and timeouts), oldest case first.
       responses:
         "200":
-          description: Active mutes.
+          description: Active timed infractions.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutesResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/guilds/{gid}/mutes/{number}/lift:
+    parameters:
+      - { $ref: "#/components/parameters/Gid" }
+      - { $ref: "#/components/parameters/CaseNumber" }
+    post:
+      tags: [moderation]
+      summary: Lift a temp-mute or temp-ban early
+      description: |
+        Moves the infraction's expiry to now. The moderation sweeper (every
+        30s) then removes the mute role or the ban and closes the case.
+        Timeouts return 409: the sweeper doesn't clear a Discord timeout.
+      responses:
+        "202": { description: Scheduled to lift on the next sweep. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   # ---- features: leveling ------------------------------------------------
   /api/v1/guilds/{gid}/levels:
@@ -826,6 +914,12 @@ components:
       required: true
       schema: { type: string }
       description: Guild id (snowflake as a string). 404 if the bot isn't in it.
+    CaseNumber:
+      name: number
+      in: path
+      required: true
+      schema: { type: integer }
+      description: Case number within the guild.
 
   responses:
     BadRequest:
@@ -1050,6 +1144,20 @@ components:
         limit: { type: integer }
         offset: { type: integer }
       required: [cases, limit, offset]
+
+    PatchCase:
+      type: object
+      properties:
+        reason: { type: string, minLength: 1 }
+      required: [reason]
+
+    WarnPolicy:
+      type: object
+      properties:
+        threshold: { type: integer, minimum: 0, maximum: 50, description: Active warns before the action. 0 turns escalation off. }
+        action: { type: string, enum: [timeout, kick, ban] }
+        timeout_secs: { type: integer, minimum: 1, maximum: 2419200, description: Timeout length when action is timeout. }
+      required: [threshold, action, timeout_secs]
 
     Mute:
       type: object
